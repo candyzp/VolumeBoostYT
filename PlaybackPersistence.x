@@ -1,12 +1,77 @@
 #import <AVFoundation/AVFoundation.h>
 
-static inline void ReapplyVolumeBoost(AVPlayer *player) {
-  if (player) {
-    [player setVolume:1.0f];
+static NSHashTable *playbackRenderers = nil;
+static NSUInteger reapplyGeneration = 0;
+
+static inline void RegisterPlaybackRenderer(id renderer) {
+  if (!playbackRenderers) {
+    playbackRenderers = [NSHashTable weakObjectsHashTable];
+  }
+  if (renderer) {
+    [playbackRenderers addObject:renderer];
   }
 }
 
+static inline void ApplyBaseVolume(id renderer) {
+  if (renderer && [renderer respondsToSelector:@selector(setVolume:)]) {
+    [renderer setVolume:1.0f];
+  }
+}
+
+static void ReapplyTrackedRenderers(void) {
+  for (id renderer in [playbackRenderers allObjects]) {
+    ApplyBaseVolume(renderer);
+  }
+}
+
+static void QueueReapply(void) {
+  NSUInteger generation = ++reapplyGeneration;
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (generation == reapplyGeneration) {
+      ReapplyTrackedRenderers();
+    }
+  });
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (generation == reapplyGeneration) {
+                     ReapplyTrackedRenderers();
+                   }
+                 });
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (generation == reapplyGeneration) {
+                     ReapplyTrackedRenderers();
+                   }
+                 });
+}
+
+static inline void TrackRenderer(id renderer) {
+  RegisterPlaybackRenderer(renderer);
+  __weak id weakRenderer = renderer;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    id strongRenderer = weakRenderer;
+    if (strongRenderer) {
+      ApplyBaseVolume(strongRenderer);
+    }
+  });
+}
+
+static inline void ReapplyVolumeBoost(AVPlayer *player) {
+  RegisterPlaybackRenderer(player);
+  ReapplyTrackedRenderers();
+  QueueReapply();
+}
+
 %hook AVPlayer
+
+- (instancetype)init {
+  id orig = %orig;
+  TrackRenderer(orig);
+  return orig;
+}
 
 - (void)play {
   %orig;
@@ -28,6 +93,42 @@ static inline void ReapplyVolumeBoost(AVPlayer *player) {
 - (void)replaceCurrentItemWithPlayerItem:(AVPlayerItem *)item {
   %orig(item);
   ReapplyVolumeBoost(self);
+}
+
+%end
+
+%hook AVSampleBufferAudioRenderer
+
+- (instancetype)init {
+  id orig = %orig;
+  TrackRenderer(orig);
+  return orig;
+}
+
+%end
+
+%hook AVAudioPlayerNode
+
+- (instancetype)init {
+  id orig = %orig;
+  TrackRenderer(orig);
+  return orig;
+}
+
+%end
+
+%hook AVAudioPlayer
+
+- (instancetype)initWithContentsOfURL:(NSURL *)url error:(NSError **)outError {
+  id orig = %orig;
+  TrackRenderer(orig);
+  return orig;
+}
+
+- (instancetype)initWithData:(NSData *)data error:(NSError **)outError {
+  id orig = %orig;
+  TrackRenderer(orig);
+  return orig;
 }
 
 %end
