@@ -42,7 +42,6 @@ jobs:
           cp packages/*.deb output/
           cp VolumeBoostYT.plist output/
           
-          # Move the compiled dylib into the output folder for easy sideload access
           if [ -f .theos/obj/VolumeBoostYT.dylib ]; then
             cp .theos/obj/VolumeBoostYT.dylib output/
           elif [ -f .theos/obj/debug/VolumeBoostYT.dylib ]; then
