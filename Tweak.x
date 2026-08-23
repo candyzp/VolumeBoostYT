@@ -60,7 +60,7 @@ static BOOL IsVolumeBoostYTEnabled() {
 // CONFIGURATION: Set to 1 to remember volume across app restarts, 0 to reset to
 // 100% on launch.
 // -----------------------------------------------------
-#define ENABLE_VOLUME_PERSISTENCE 0
+#define ENABLE_VOLUME_PERSISTENCE 1
 
 #if ENABLE_VOLUME_PERSISTENCE
 static NSString *const kCustomYouTubeVolumeScalarKey =
@@ -201,11 +201,11 @@ static void SetCustomVolumeMultiplier(float multiplier) {
 }
 %end
 
-    // -----------------------------------------------------
-    // UI Hooks for Configuration (Native Touch Tracking via sendEvent:)
-    // -----------------------------------------------------
+// -----------------------------------------------------
+// UI Hooks for Configuration (Native Touch Tracking via sendEvent:)
+// -----------------------------------------------------
 
-    static float gestureStartMultiplier = 1.0f;
+static float gestureStartMultiplier = 1.0f;
 static BOOL possibleVolumeGesture = NO;
 static BOOL isTrackingVolumeGesture = NO;
 static CGPoint initialTouchPoint;
@@ -312,15 +312,15 @@ static CGPoint initialTouchPoint;
 }
 %end
 
-        // -----------------------------------------------------
-        // YouTube In-App Settings Integration
-        // -----------------------------------------------------
+// -----------------------------------------------------
+// YouTube In-App Settings Integration
+// -----------------------------------------------------
 
-        %group YouTubeSettings
+%group YouTubeSettings
 
-        %hook YTSettingsGroupData
+%hook YTSettingsGroupData
 
-    - (NSArray<NSNumber *> *)orderedCategories {
+- (NSArray<NSNumber *> *)orderedCategories {
   // Only inject into the main settings group (type 1)
   if (self.type != 1)
     return %orig;
@@ -331,12 +331,13 @@ static CGPoint initialTouchPoint;
     return %orig;
   }
 
-  NSMutableArray *mutableCategories = %orig.mutableCopy;
+  NSArray<NSNumber *> *categories = %orig;
+  NSMutableArray<NSNumber *> *mutableCategories = [categories mutableCopy];
   if (mutableCategories) {
     // Insert our tweak section near the top
     [mutableCategories insertObject:@(TweakSection) atIndex:0];
   }
-  return mutableCategories.copy ?: %orig;
+  return mutableCategories.copy ?: categories;
 }
 
 + (NSMutableArray<NSNumber *> *)tweaks {
@@ -349,9 +350,9 @@ static CGPoint initialTouchPoint;
 
 %end
 
-        %hook YTAppSettingsPresentationData
+%hook YTAppSettingsPresentationData
 
-    + (NSArray<NSNumber *> *)settingsCategoryOrder {
++ (NSArray<NSNumber *> *)settingsCategoryOrder {
   NSArray<NSNumber *> *order = %orig;
   NSUInteger insertIndex = [order indexOfObject:@(1)];
 
@@ -366,10 +367,10 @@ static CGPoint initialTouchPoint;
 
 %end
 
-        %hook YTSettingsSectionItemManager
+%hook YTSettingsSectionItemManager
 
-        %new(v@:@)
-    - (void)updateVolumeBoostYTSectionWithEntry:(id)entry {
+%new(v@:@)
+- (void)updateVolumeBoostYTSectionWithEntry:(id)entry {
   NSMutableArray<YTSettingsSectionItem *> *sectionItems =
       [NSMutableArray array];
   Class YTSettingsSectionItemClass = %c(YTSettingsSectionItem);
@@ -435,9 +436,9 @@ static CGPoint initialTouchPoint;
 
 %end
 
-    %end // end group YouTubeSettings
+%end // end group YouTubeSettings
 
-    %ctor {
+%ctor {
   // Never inject into SpringBoard (Home Screen)
   NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
   if ([bundleID isEqualToString:@"com.apple.springboard"]) {
