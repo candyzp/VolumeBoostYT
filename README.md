@@ -29,3 +29,4 @@ To ensure you always have the latest version compiled from source, you can build
 - Use the `.dylib` file to inject into YouTube IPAs via sideloading (LiveContainer, TrollStore, etc.)
 - Use the `.deb` file to install on jailbroken rootless devices (Sileo, Zebra, etc.)
 
+fixed the issue where the volume boost didn’t apply across the videos
