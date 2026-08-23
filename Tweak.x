@@ -47,6 +47,11 @@
 
 static const NSInteger TweakSection = 'ndyt';
 static NSString *const kVolumeBoostYTEnabledKey = @"VolumeBoostYTEnabled";
+static NSString *const kRememberVolumeEnabledKey = @"RememberVolumeEnabled";
+static NSString *const kCustomYouTubeVolumeScalarKey =
+    @"CustomYouTubeVolumeScalar";
+static float currentVolumeMultiplier = 1.0f;
+static BOOL currentVolumeMultiplierInitialized = NO;
 
 static BOOL IsVolumeBoostYTEnabled() {
   NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -56,18 +61,13 @@ static BOOL IsVolumeBoostYTEnabled() {
   return [defaults boolForKey:kVolumeBoostYTEnabledKey];
 }
 
-// -----------------------------------------------------
-// CONFIGURATION: Set to 1 to remember volume across app restarts, 0 to reset to
-// 100% on launch.
-// -----------------------------------------------------
-#define ENABLE_VOLUME_PERSISTENCE 1
-
-#if ENABLE_VOLUME_PERSISTENCE
-static NSString *const kCustomYouTubeVolumeScalarKey =
-    @"CustomYouTubeVolumeScalar";
-#else
-static float currentVolumeMultiplier = 1.0f;
-#endif
+static BOOL IsRememberVolumeEnabled() {
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  if ([defaults objectForKey:kRememberVolumeEnabledKey] == nil) {
+    return YES;
+  }
+  return [defaults boolForKey:kRememberVolumeEnabledKey];
+}
 
 static NSHashTable *activeRenderers = nil;
 
@@ -82,15 +82,17 @@ static void RegisterRenderer(id renderer) {
 
 // Helper to get current volume multiplier
 static float GetCustomVolumeMultiplier() {
-#if ENABLE_VOLUME_PERSISTENCE
-  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-  if ([defaults objectForKey:kCustomYouTubeVolumeScalarKey] == nil) {
-    return 1.0f; // Default to 100% volume
+  if (!currentVolumeMultiplierInitialized) {
+    currentVolumeMultiplierInitialized = YES;
+    if (IsRememberVolumeEnabled()) {
+      NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+      if ([defaults objectForKey:kCustomYouTubeVolumeScalarKey] != nil) {
+        currentVolumeMultiplier =
+            [defaults floatForKey:kCustomYouTubeVolumeScalarKey];
+      }
+    }
   }
-  return [defaults floatForKey:kCustomYouTubeVolumeScalarKey];
-#else
   return currentVolumeMultiplier;
-#endif
 }
 
 static float GetLogarithmicAudioMultiplier() {
@@ -120,14 +122,15 @@ static void SetCustomVolumeMultiplier(float multiplier) {
   if (multiplier > 20.0f)
     multiplier = 20.0f;
 
-#if ENABLE_VOLUME_PERSISTENCE
-  [[NSUserDefaults standardUserDefaults]
-      setFloat:multiplier
-        forKey:kCustomYouTubeVolumeScalarKey];
-  [[NSUserDefaults standardUserDefaults] synchronize];
-#else
   currentVolumeMultiplier = multiplier;
-#endif
+  currentVolumeMultiplierInitialized = YES;
+
+  if (IsRememberVolumeEnabled()) {
+    [[NSUserDefaults standardUserDefaults]
+        setFloat:multiplier
+          forKey:kCustomYouTubeVolumeScalarKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+  }
 
   NotifyVolumeChange();
 }
@@ -403,6 +406,29 @@ static CGPoint initialTouchPoint;
                   }
                 settingItemId:0];
   [sectionItems addObject:enableTweak];
+
+  YTSettingsSectionItem *rememberVolume = [YTSettingsSectionItemClass
+          switchItemWithTitle:@"Remember Volume"
+             titleDescription:nil
+      accessibilityIdentifier:nil
+                     switchOn:IsRememberVolumeEnabled()
+                  switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
+                    NSUserDefaults *defaults =
+                        [NSUserDefaults standardUserDefaults];
+                    float currentMultiplier = GetCustomVolumeMultiplier();
+                    [defaults setBool:enabled
+                               forKey:kRememberVolumeEnabledKey];
+                    if (enabled) {
+                      [defaults setFloat:currentMultiplier
+                                  forKey:kCustomYouTubeVolumeScalarKey];
+                    } else {
+                      [defaults removeObjectForKey:kCustomYouTubeVolumeScalarKey];
+                    }
+                    [defaults synchronize];
+                    return YES;
+                  }
+                settingItemId:1];
+  [sectionItems addObject:rememberVolume];
 
   if ([settingsViewController
           respondsToSelector:@selector
