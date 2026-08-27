@@ -1,6 +1,7 @@
 #import "YTBassHUD.h"
 #import <AudioToolbox/AudioToolbox.h>
 #import <UIKit/UIKit.h>
+#import <os/lock.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -66,17 +67,23 @@ typedef struct {
   float z2[BASS_MAX_CHANNELS];
 } BassFilterState;
 
-typedef struct {
+typedef struct BassRenderContext {
+  AudioUnit unit;
+  AudioUnitElement element;
   AURenderCallback originalProc;
   void *originalRefCon;
   AudioStreamBasicDescription format;
-  BOOL hasFormat;
+  volatile BOOL hasFormat;
   BassFilterState filter;
+  struct BassRenderContext *next;
 } BassRenderContext;
 
 static OSStatus (*OriginalAudioUnitSetProperty)(AudioUnit, AudioUnitPropertyID,
                                                 AudioUnitScope, AudioUnitElement,
                                                 const void *, UInt32) = NULL;
+static OSStatus (*OriginalAudioUnitInitialize)(AudioUnit) = NULL;
+static BassRenderContext *gRenderContexts = NULL;
+static os_unfair_lock gRenderContextsLock = OS_UNFAIR_LOCK_INIT;
 
 static float ClampBassAmount(float value) {
   if (value < 0.0f) return 0.0f;
@@ -264,23 +271,49 @@ static BOOL IsOutputAudioUnit(AudioUnit unit) {
   return desc.componentType == kAudioUnitType_Output;
 }
 
-static BOOL ReadPlaybackFormat(AudioUnit unit, AudioUnitElement element,
-                               AudioStreamBasicDescription *format) {
+static BOOL TryReadFormat(AudioUnit unit, AudioUnitScope scope,
+                          AudioUnitElement element,
+                          AudioStreamBasicDescription *format) {
   UInt32 size = sizeof(*format);
   memset(format, 0, sizeof(*format));
   if (AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat,
-                           kAudioUnitScope_Input, element, format, &size) == noErr &&
-      format->mFormatID == kAudioFormatLinearPCM && format->mSampleRate > 0.0)
-    return YES;
+                           scope, element, format, &size) != noErr)
+    return NO;
+  return format->mFormatID == kAudioFormatLinearPCM &&
+         format->mSampleRate > 0.0 &&
+         format->mChannelsPerFrame > 0;
+}
 
-  size = sizeof(*format);
-  memset(format, 0, sizeof(*format));
-  if (AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat,
-                           kAudioUnitScope_Output, element, format, &size) == noErr &&
-      format->mFormatID == kAudioFormatLinearPCM && format->mSampleRate > 0.0)
-    return YES;
-
+static BOOL ReadPlaybackFormat(AudioUnit unit, AudioUnitElement element,
+                               AudioStreamBasicDescription *format) {
+  if (TryReadFormat(unit, kAudioUnitScope_Input, element, format)) return YES;
+  if (element != 0 && TryReadFormat(unit, kAudioUnitScope_Input, 0, format)) return YES;
+  if (TryReadFormat(unit, kAudioUnitScope_Output, element, format)) return YES;
+  if (element != 0 && TryReadFormat(unit, kAudioUnitScope_Output, 0, format)) return YES;
   return NO;
+}
+
+static void RegisterRenderContext(BassRenderContext *context) {
+  os_unfair_lock_lock(&gRenderContextsLock);
+  context->next = gRenderContexts;
+  gRenderContexts = context;
+  os_unfair_lock_unlock(&gRenderContextsLock);
+}
+
+static void RefreshRenderContexts(AudioUnit unit) {
+  os_unfair_lock_lock(&gRenderContextsLock);
+  for (BassRenderContext *context = gRenderContexts;
+       context;
+       context = context->next) {
+    if (context->unit != unit) continue;
+    AudioStreamBasicDescription format;
+    if (ReadPlaybackFormat(context->unit, context->element, &format)) {
+      context->format = format;
+      context->hasFormat = YES;
+      context->filter.generation = 0;
+    }
+  }
+  os_unfair_lock_unlock(&gRenderContextsLock);
 }
 
 static OSStatus BassRenderCallback(void *refCon,
@@ -292,11 +325,14 @@ static OSStatus BassRenderCallback(void *refCon,
   BassRenderContext *context = (BassRenderContext *)refCon;
   if (!context || !context->originalProc) return noErr;
 
-  OSStatus status = context->originalProc(context->originalRefCon, ioActionFlags,
-                                          inTimeStamp, inBusNumber,
-                                          inNumberFrames, ioData);
-  if (status != noErr || !ioData || !context->hasFormat) return status;
-  if (!gBassEnabled) return status;
+  OSStatus status = context->originalProc(context->originalRefCon,
+                                          ioActionFlags,
+                                          inTimeStamp,
+                                          inBusNumber,
+                                          inNumberFrames,
+                                          ioData);
+  if (status != noErr || !ioData || !context->hasFormat || !gBassEnabled)
+    return status;
 
   float amount = ClampBassAmount(gBassAmount);
   if (amount <= 0.0001f) return status;
@@ -310,8 +346,7 @@ static OSStatus HookedAudioUnitSetProperty(AudioUnit inUnit,
                                            AudioUnitElement inElement,
                                            const void *inData,
                                            UInt32 inDataSize) {
-  if (!OriginalAudioUnitSetProperty)
-    return kAudio_ParamError;
+  if (!OriginalAudioUnitSetProperty) return kAudio_ParamError;
 
   if (inID == kAudioUnitProperty_SetRenderCallback &&
       inScope == kAudioUnitScope_Input &&
@@ -321,6 +356,8 @@ static OSStatus HookedAudioUnitSetProperty(AudioUnit inUnit,
     if (incoming->inputProc && incoming->inputProc != BassRenderCallback) {
       BassRenderContext *context = (BassRenderContext *)calloc(1, sizeof(BassRenderContext));
       if (context) {
+        context->unit = inUnit;
+        context->element = inElement;
         context->originalProc = incoming->inputProc;
         context->originalRefCon = incoming->inputProcRefCon;
         context->hasFormat = ReadPlaybackFormat(inUnit, inElement, &context->format);
@@ -332,22 +369,38 @@ static OSStatus HookedAudioUnitSetProperty(AudioUnit inUnit,
         OSStatus status = OriginalAudioUnitSetProperty(inUnit, inID, inScope,
                                                        inElement, &wrapped,
                                                        sizeof(wrapped));
-        if (status == noErr) return status;
+        if (status == noErr) {
+          RegisterRenderContext(context);
+          return status;
+        }
         free(context);
       }
     }
   }
 
-  return OriginalAudioUnitSetProperty(inUnit, inID, inScope, inElement,
-                                      inData, inDataSize);
+  OSStatus status = OriginalAudioUnitSetProperty(inUnit, inID, inScope,
+                                                 inElement, inData, inDataSize);
+  if (status == noErr && inID == kAudioUnitProperty_StreamFormat)
+    RefreshRenderContexts(inUnit);
+  return status;
+}
+
+static OSStatus HookedAudioUnitInitialize(AudioUnit inUnit) {
+  if (!OriginalAudioUnitInitialize) return kAudio_ParamError;
+  OSStatus status = OriginalAudioUnitInitialize(inUnit);
+  if (status == noErr) RefreshRenderContexts(inUnit);
+  return status;
 }
 
 static void InstallCoreAudioBassHook(void) {
-  struct rebinding binding;
-  binding.name = "AudioUnitSetProperty";
-  binding.replacement = (void *)HookedAudioUnitSetProperty;
-  binding.replaced = (void **)&OriginalAudioUnitSetProperty;
-  rebind_symbols(&binding, 1);
+  struct rebinding bindings[2];
+  bindings[0].name = "AudioUnitSetProperty";
+  bindings[0].replacement = (void *)HookedAudioUnitSetProperty;
+  bindings[0].replaced = (void **)&OriginalAudioUnitSetProperty;
+  bindings[1].name = "AudioUnitInitialize";
+  bindings[1].replacement = (void *)HookedAudioUnitInitialize;
+  bindings[1].replaced = (void **)&OriginalAudioUnitInitialize;
+  rebind_symbols(bindings, 2);
 }
 
 static float bassGestureStartAmount = 0.0f;
