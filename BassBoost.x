@@ -621,7 +621,7 @@ static CGPoint bassInitialTouchPoint;
 
   YTSettingsSectionItem *enable = [itemClass
       switchItemWithTitle:@"Enable Bass Boost"
-      titleDescription:@"Use the left-edge gesture to boost low frequencies"
+      titleDescription:nil
       accessibilityIdentifier:nil
       switchOn:IsBassBoostEnabled()
       switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
