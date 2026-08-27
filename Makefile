@@ -15,5 +15,6 @@ VolumeBoostYT_LOGOSFLAGS = -c generator=internal
 
 before-all::
 	@python3 -c 'p="Tweak.x"; s=open(p).read(); s=s.replace("#define ENABLE_VOLUME_PERSISTENCE 0", "#define ENABLE_VOLUME_PERSISTENCE 1").replace("  NSMutableArray *mutableCategories = %orig.mutableCopy;", "  NSArray<NSNumber *> *categories = %orig;\\n  NSMutableArray<NSNumber *> *mutableCategories = [categories mutableCopy];"); open(p, "w").write(s)'
+	@python3 -c 'p="BassBoost.x"; s=open(p).read(); s=s.replace("[self updateVolumeBoostYTBassSectionWithEntry:entry];", "[self performSelector:@selector(updateVolumeBoostYTBassSectionWithEntry:) withObject:entry];"); open(p, "w").write(s)'
 
 include $(THEOS_MAKE_PATH)/tweak.mk
