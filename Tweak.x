@@ -387,7 +387,7 @@ static CGPoint initialTouchPoint;
 
   YTSettingsSectionItem *enableTweak = [YTSettingsSectionItemClass
           switchItemWithTitle:@"Enable VolumeBoostYT"
-             titleDescription:@"Allow custom right-edge pan volume gesture"
+             titleDescription:nil
       accessibilityIdentifier:nil
                      switchOn:IsVolumeBoostYTEnabled()
                   switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
