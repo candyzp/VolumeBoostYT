@@ -10,7 +10,7 @@ TWEAK_NAME = VolumeBoostYT
 
 VolumeBoostYT_FILES = Tweak.x PlaybackPersistence.x BassBoost.x YTVolumeHUD.m YTBassHUD.m
 VolumeBoostYT_CFLAGS = -fobjc-arc
-VolumeBoostYT_FRAMEWORKS = UIKit AVFoundation AudioToolbox
+VolumeBoostYT_FRAMEWORKS = UIKit AVFoundation AudioToolbox CoreMedia MediaToolbox
 VolumeBoostYT_LOGOSFLAGS = -c generator=internal
 
 before-all::
