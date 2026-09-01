@@ -7,8 +7,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = VolumeBoostYT
 
-VolumeBoostYT_FILES = Tweak.x PlaybackPersistence.x BassBoost.x YTVolumeHUD.m YTBassHUD.m $(THEOS)/vendor/orion/fishhook/fishhook.c
-VolumeBoostYT_CFLAGS = -I$(THEOS)/vendor/orion/fishhook
+VolumeBoostYT_FILES = Tweak.x PlaybackPersistence.x YTVolumeHUD.m
 VolumeBoostYT_OBJCFLAGS = -fobjc-arc
 VolumeBoostYT_FRAMEWORKS = UIKit AVFoundation AudioToolbox
 VolumeBoostYT_LOGOSFLAGS = -c generator=internal
