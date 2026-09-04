@@ -5,14 +5,11 @@
 
 @interface VBYAudioPanelController : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UIWindow *window;
-@property(nonatomic, strong) UIButton *iconButton;
 @property(nonatomic, strong) UIVisualEffectView *panel;
 @property(nonatomic, strong) UIScrollView *scrollView;
 @property(nonatomic, strong) UIView *contentRoot;
 @property(nonatomic, strong) UIScreenEdgePanGestureRecognizer *legacyPan;
-@property(nonatomic, weak) AVPlayer *activePlayer;
 @property(nonatomic, assign) BOOL expanded;
-@property(nonatomic, assign) BOOL playerPlaying;
 @property(nonatomic, assign) CGFloat contentHeight;
 @property(nonatomic, assign) float legacyStartVolume;
 @property(nonatomic, assign) BOOL panelLegacyMode;
@@ -106,25 +103,8 @@ static UIWindow *VBYFindWindow(void) {
   if (self.legacyPan && self.window)
     [self.window removeGestureRecognizer:self.legacyPan];
 
-  [self.iconButton removeFromSuperview];
   [self.panel removeFromSuperview];
-
   self.window = window;
-
-  if (!self.iconButton) {
-    self.iconButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.iconButton.tintColor = [UIColor whiteColor];
-    self.iconButton.backgroundColor = [UIColor colorWithWhite:0.05 alpha:0.54];
-    self.iconButton.layer.cornerRadius = 19.0;
-    self.iconButton.layer.cornerCurve = kCACornerCurveContinuous;
-    self.iconButton.layer.borderWidth = 0.5;
-    self.iconButton.layer.borderColor =
-        [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
-    self.iconButton.clipsToBounds = YES;
-    [self.iconButton addTarget:self
-                        action:@selector(togglePanel)
-              forControlEvents:UIControlEventTouchUpInside];
-  }
 
   if (!self.legacyPan) {
     self.legacyPan = [[UIScreenEdgePanGestureRecognizer alloc]
@@ -136,11 +116,8 @@ static UIWindow *VBYFindWindow(void) {
     self.legacyPan.maximumNumberOfTouches = 1;
   }
 
-  [window addSubview:self.iconButton];
   [window addGestureRecognizer:self.legacyPan];
-
   if (self.panel) [window addSubview:self.panel];
-
   [self layoutViews];
 }
 
@@ -165,7 +142,8 @@ static UIWindow *VBYFindWindow(void) {
   self.scrollView.showsVerticalScrollIndicator = NO;
   [self.panel.contentView addSubview:self.scrollView];
 
-  CGFloat width = MIN(360.0, MAX(280.0, self.window.bounds.size.width - 24.0));
+  CGFloat width =
+      MIN(360.0, MAX(280.0, self.window.bounds.size.width - 24.0));
   self.contentRoot =
       [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 10)];
   [self.scrollView addSubview:self.contentRoot];
@@ -173,16 +151,17 @@ static UIWindow *VBYFindWindow(void) {
   CGFloat y = 12.0;
 
   UIImageView *headerIcon =
-      [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:
-                                             @"waveform.circle.fill"]];
+      [[UIImageView alloc] initWithImage:
+          [UIImage systemImageNamed:@"waveform.circle.fill"]];
   headerIcon.tintColor = [UIColor whiteColor];
   headerIcon.contentMode = UIViewContentModeScaleAspectFit;
   headerIcon.frame = CGRectMake(16.0, y + 2.0, 28.0, 28.0);
   [self.contentRoot addSubview:headerIcon];
 
-  UILabel *header = [[UILabel alloc]
-      initWithFrame:CGRectMake(52.0, y, width - 104.0, 32.0)];
-  header.text = VBYIsLegacyUIEnabled() ? @"EQ & Pitch" : @"VolumeBoostYT Audio";
+  UILabel *header =
+      [[UILabel alloc] initWithFrame:CGRectMake(52.0, y, width - 104.0, 32.0)];
+  header.text =
+      VBYIsLegacyUIEnabled() ? @"EQ & Pitch" : @"VolumeBoostYT Audio";
   header.textColor = [UIColor whiteColor];
   header.font = [UIFont systemFontOfSize:18.0 weight:UIFontWeightSemibold];
   header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -219,8 +198,8 @@ static UIWindow *VBYFindWindow(void) {
                    tag:200];
   y += 54.0;
 
-  UILabel *eqTitle =
-      [[UILabel alloc] initWithFrame:CGRectMake(16.0, y + 2.0, width - 32.0, 24.0)];
+  UILabel *eqTitle = [[UILabel alloc]
+      initWithFrame:CGRectMake(16.0, y + 2.0, width - 32.0, 24.0)];
   eqTitle.text = @"Equalizer";
   eqTitle.textColor = [UIColor colorWithWhite:1.0 alpha:0.9];
   eqTitle.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
@@ -247,7 +226,8 @@ static UIWindow *VBYFindWindow(void) {
   reset.layer.cornerCurve = kCACornerCurveContinuous;
   reset.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.10];
   reset.tintColor = [UIColor whiteColor];
-  reset.titleLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+  reset.titleLabel.font =
+      [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
   [reset setTitle:@"Reset Audio" forState:UIControlStateNormal];
   [reset addTarget:self
                 action:@selector(resetAudio)
@@ -347,115 +327,87 @@ static UIWindow *VBYFindWindow(void) {
   [self buildPanel];
   self.expanded = YES;
   self.panel.hidden = NO;
-  self.iconButton.hidden = YES;
   [self layoutViews];
 }
 
-- (void)togglePanel {
-  if (!self.panel) [self buildPanel];
-  self.expanded = !self.expanded;
-  self.panel.hidden = !self.expanded;
-  self.iconButton.hidden = self.expanded;
+- (void)presentPanel {
+  if (!VBYIsVolumeBoostYTEnabled()) return;
+
+  UIWindow *window = VBYFindWindow();
+  if (window) [self attachToWindow:window];
+  if (!self.window) return;
+
+  if (!self.panel || self.panelLegacyMode != VBYIsLegacyUIEnabled())
+    [self buildPanel];
+
+  self.expanded = YES;
+  self.panel.hidden = NO;
   [self layoutViews];
+  [self.window bringSubviewToFront:self.panel];
 }
 
 - (void)closePanel {
   self.expanded = NO;
   self.panel.hidden = YES;
-  [self updateVisibility];
 }
 
 - (void)layoutViews {
   UIWindow *window = self.window;
-  if (!window) return;
+  if (!window || !self.panel) return;
 
   CGFloat width = window.bounds.size.width;
   CGFloat height = window.bounds.size.height;
   UIEdgeInsets safe = window.safeAreaInsets;
   CGFloat top = safe.top + 8.0;
+  CGFloat panelWidth = MIN(360.0, MAX(280.0, width - 24.0));
+  CGFloat maxHeight = MAX(220.0, height - safe.top - safe.bottom - 16.0);
+  CGFloat panelHeight = MIN(self.contentHeight, maxHeight);
 
-  self.iconButton.frame =
-      CGRectMake((width - 52.0) * 0.5, top, 52.0, 38.0);
+  self.panel.frame =
+      CGRectMake((width - panelWidth) * 0.5, top, panelWidth, panelHeight);
+  self.scrollView.frame = self.panel.contentView.bounds;
 
-  if (self.panel) {
-    CGFloat panelWidth = MIN(360.0, MAX(280.0, width - 24.0));
-    CGFloat maxHeight = MAX(220.0, height - safe.top - safe.bottom - 16.0);
-    CGFloat panelHeight = MIN(self.contentHeight, maxHeight);
-    self.panel.frame =
-        CGRectMake((width - panelWidth) * 0.5, top, panelWidth, panelHeight);
-    self.scrollView.frame = self.panel.contentView.bounds;
-    CGRect rootFrame = self.contentRoot.frame;
-    rootFrame.size.width = panelWidth;
-    rootFrame.size.height = self.contentHeight;
-    self.contentRoot.frame = rootFrame;
-    self.scrollView.contentSize = CGSizeMake(panelWidth, self.contentHeight);
-  }
-
-  [window bringSubviewToFront:self.iconButton];
-  if (self.panel && !self.panel.hidden) [window bringSubviewToFront:self.panel];
-}
-
-- (void)updateVisibility {
-  BOOL enabled = VBYIsVolumeBoostYTEnabled();
-  BOOL legacy = VBYIsLegacyUIEnabled();
-  BOOL hasPlayer = self.activePlayer && self.activePlayer.currentItem != nil;
-
-  self.legacyPan.enabled = enabled && legacy && hasPlayer;
-
-  UIImage *icon =
-      [UIImage systemImageNamed:legacy ? @"slider.horizontal.3"
-                                      : @"speaker.wave.3.fill"];
-  [self.iconButton setImage:icon forState:UIControlStateNormal];
-
-  BOOL showIcon = NO;
-  if (enabled && hasPlayer) {
-    if (legacy)
-      showIcon = !self.playerPlaying && !self.expanded;
-    else
-      showIcon = !self.expanded;
-  }
-
-  self.iconButton.hidden = !showIcon;
-  self.panel.hidden = !(enabled && hasPlayer && self.expanded);
-
-  if (!enabled || !hasPlayer) self.expanded = NO;
-
-  [self layoutViews];
+  CGRect rootFrame = self.contentRoot.frame;
+  rootFrame.size.width = panelWidth;
+  rootFrame.size.height = self.contentHeight;
+  self.contentRoot.frame = rootFrame;
+  self.scrollView.contentSize = CGSizeMake(panelWidth, self.contentHeight);
 }
 
 - (void)refresh {
   if (!NSClassFromString(@"YTSettingsGroupData")) {
-    self.iconButton.hidden = YES;
     self.panel.hidden = YES;
     self.legacyPan.enabled = NO;
+    self.expanded = NO;
     return;
   }
 
   UIWindow *window = VBYFindWindow();
   if (window) [self attachToWindow:window];
 
-  if (self.panel && self.panelLegacyMode != VBYIsLegacyUIEnabled()) {
-    self.expanded = NO;
+  BOOL modeChanged =
+      self.panel && self.panelLegacyMode != VBYIsLegacyUIEnabled();
+  if (modeChanged) {
+    BOOL wasExpanded = self.expanded;
     [self buildPanel];
-    self.panel.hidden = YES;
+    self.expanded = wasExpanded;
   }
 
-  [self updateVisibility];
+  self.legacyPan.enabled =
+      VBYIsVolumeBoostYTEnabled() && VBYIsLegacyUIEnabled();
+
+  if (!VBYIsVolumeBoostYTEnabled()) self.expanded = NO;
+  if (self.panel) self.panel.hidden = !self.expanded;
+
+  [self layoutViews];
 }
 
-- (void)playerStateChanged:(AVPlayer *)player {
-  if (!player) return;
-
-  dispatch_async(dispatch_get_main_queue(), ^{
-    self.activePlayer = player;
-    self.playerPlaying = player.rate > 0.001f;
-    if (self.playerPlaying) self.expanded = NO;
-
-    UIWindow *window = VBYFindWindow();
-    if (window) [self attachToWindow:window];
-
-    [self updateVisibility];
-  });
+- (void)setPlaying:(BOOL)playing {
+  if (playing) {
+    self.expanded = NO;
+    self.panel.hidden = YES;
+  }
+  [self refresh];
 }
 
 - (void)handleLegacyPan:(UIScreenEdgePanGestureRecognizer *)gesture {
@@ -469,7 +421,8 @@ static UIWindow *VBYFindWindow(void) {
 
   if (gesture.state == UIGestureRecognizerStateChanged) {
     CGPoint translation = [gesture translationInView:self.window];
-    float value = self.legacyStartVolume - (float)translation.y / 30.0f;
+    float value =
+        self.legacyStartVolume - (float)translation.y / 30.0f;
     value = MAX(0.0f, MIN(20.0f, value));
     VBYSetVolumeMultiplier(value);
     [[YTVolumeHUD sharedHUD] showWithValue:value];
@@ -493,8 +446,21 @@ static UIWindow *VBYFindWindow(void) {
 
 @end
 
+void VBYAudioPanelPresent(void) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[VBYAudioPanelController sharedController] presentPanel];
+  });
+}
+
+void VBYAudioPanelSetPlaying(BOOL playing) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[VBYAudioPanelController sharedController] setPlaying:playing];
+  });
+}
+
 void VBYAudioPanelPlayerStateChanged(AVPlayer *player) {
-  [[VBYAudioPanelController sharedController] playerStateChanged:player];
+  if (!player) return;
+  VBYAudioPanelSetPlaying(player.rate > 0.001f);
 }
 
 void VBYAudioPanelRefresh(void) {
