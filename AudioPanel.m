@@ -20,23 +20,45 @@
 
 static UIWindow *VBYFindWindow(void) {
   UIApplication *app = [UIApplication sharedApplication];
-  if (@available(iOS 13.0, *)) {
-    for (UIScene *scene in app.connectedScenes) {
-      if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-      UIWindowScene *windowScene = (UIWindowScene *)scene;
-      if (windowScene.activationState != UISceneActivationStateForegroundActive)
-        continue;
-      for (UIWindow *window in windowScene.windows) {
-        if (window.isKeyWindow && !window.hidden) return window;
-      }
-      for (UIWindow *window in windowScene.windows) {
-        if (!window.hidden && window.alpha > 0.01 &&
-            window.screen == [UIScreen mainScreen])
-          return window;
+  UIWindow *fallback = nil;
+
+  for (UIScene *scene in app.connectedScenes) {
+    if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+    if (windowScene.activationState != UISceneActivationStateForegroundActive)
+      continue;
+
+    for (UIWindow *window in windowScene.windows) {
+      if (window.isKeyWindow && !window.hidden) return window;
+    }
+
+    for (UIWindow *window in windowScene.windows) {
+      if (!window.hidden && window.alpha > 0.01 &&
+          window.screen == [UIScreen mainScreen]) {
+        fallback = window;
+        break;
       }
     }
+
+    if (fallback) return fallback;
   }
-  return app.keyWindow;
+
+  for (UIScene *scene in app.connectedScenes) {
+    if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+
+    for (UIWindow *window in windowScene.windows) {
+      if (window.isKeyWindow && !window.hidden) return window;
+    }
+
+    for (UIWindow *window in windowScene.windows) {
+      if (!window.hidden && window.alpha > 0.01 &&
+          window.screen == [UIScreen mainScreen])
+        return window;
+    }
+  }
+
+  return nil;
 }
 
 @implementation VBYAudioPanelController
