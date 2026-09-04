@@ -1,10 +1,6 @@
 name: Build Tweak
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -41,7 +37,7 @@ jobs:
           mkdir -p output
           cp packages/*.deb output/
           cp VolumeBoostYT.plist output/
-          
+
           if [ -f .theos/obj/VolumeBoostYT.dylib ]; then
             cp .theos/obj/VolumeBoostYT.dylib output/
           elif [ -f .theos/obj/debug/VolumeBoostYT.dylib ]; then
