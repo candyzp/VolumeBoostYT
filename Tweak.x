@@ -45,30 +45,10 @@
 - (void)updateVolumeBoostYTSectionWithEntry:(id)entry;
 @end
 
-@interface YTQTMButton : UIButton
-+ (instancetype)iconButton;
-@property(nonatomic, assign) CGFloat minHitTargetSize;
-@end
-
-@interface YTPlayerViewController : UIViewController
-- (void)play;
-- (void)pause;
-@end
-
 @interface YTMainAppControlsOverlayView : UIView
-@property(nonatomic, strong) YTPlayerViewController *playerViewController;
-+ (CGFloat)topButtonAdditionalPadding;
-- (YTQTMButton *)buttonWithImage:(UIImage *)image
-              accessibilityLabel:(NSString *)accessibilityLabel
-          verticalContentPadding:(CGFloat)verticalContentPadding;
-- (NSMutableArray *)topButtonControls;
-- (NSMutableArray *)topControls;
-- (void)setTopOverlayVisible:(BOOL)visible
-      isAutonavCanceledState:(BOOL)canceledState;
 @end
 
 @interface YTReelWatchPlaybackOverlayView : UIView
-- (NSArray<YTQTMButton *> *)orderedRightSideButtons;
 @end
 
 @interface VBYAudioButtonTarget : NSObject
@@ -79,13 +59,10 @@
 static const NSInteger TweakSection = 'ndyt';
 static NSString *const kVolumeBoostYTEnabledKey = @"VolumeBoostYTEnabled";
 static NSString *const kRememberVolumeEnabledKey = @"RememberVolumeEnabled";
-static NSString *const kCustomYouTubeVolumeScalarKey =
-    @"CustomYouTubeVolumeScalar";
+static NSString *const kCustomYouTubeVolumeScalarKey = @"CustomYouTubeVolumeScalar";
 static NSString *const kVBYLegacyUIKey = @"VBYLegacySwipeUI";
-static NSString *const kVBYPlayerButtonEnabledKey =
-    @"VBYPlayerAudioButtonEnabled";
-static NSString *const kVBYShortsButtonEnabledKey =
-    @"VBYShortsAudioButtonEnabled";
+static NSString *const kVBYPlayerButtonEnabledKey = @"VBYPlayerAudioButtonEnabled";
+static NSString *const kVBYShortsButtonEnabledKey = @"VBYShortsAudioButtonEnabled";
 
 static float currentVolumeMultiplier = 1.0f;
 static BOOL currentVolumeMultiplierInitialized = NO;
@@ -94,7 +71,6 @@ static NSHashTable *playerControlViews = nil;
 static NSHashTable *shortsControlViews = nil;
 static char VBYPlayerButtonAssociation;
 static char VBYShortsButtonAssociation;
-static char VBYPlayerPausedAssociation;
 
 static void VBYRefreshNativeButtons(void);
 
@@ -178,11 +154,9 @@ float VBYGetVolumeMultiplier(void) {
     if (VBYIsRememberVolumeEnabled()) {
       NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
       if ([defaults objectForKey:kCustomYouTubeVolumeScalarKey] != nil)
-        currentVolumeMultiplier =
-            [defaults floatForKey:kCustomYouTubeVolumeScalarKey];
+        currentVolumeMultiplier = [defaults floatForKey:kCustomYouTubeVolumeScalarKey];
     }
-    currentVolumeMultiplier =
-        MAX(0.0f, MIN(20.0f, currentVolumeMultiplier));
+    currentVolumeMultiplier = MAX(0.0f, MIN(20.0f, currentVolumeMultiplier));
   }
   return currentVolumeMultiplier;
 }
@@ -222,142 +196,236 @@ static UIImage *VBYAudioButtonImage(void) {
   return [image imageWithConfiguration:configuration] ?: image;
 }
 
-static void VBYTrackPlayerControls(YTMainAppControlsOverlayView *view) {
-  if (!playerControlViews) playerControlViews = [NSHashTable weakObjectsHashTable];
-  if (view) [playerControlViews addObject:view];
-}
-
-static void VBYTrackShortsControls(YTReelWatchPlaybackOverlayView *view) {
-  if (!shortsControlViews) shortsControlViews = [NSHashTable weakObjectsHashTable];
-  if (view) [shortsControlViews addObject:view];
-}
-
-static BOOL VBYPlayerIsPaused(YTPlayerViewController *player) {
-  if (!player) return NO;
-  NSNumber *paused =
-      objc_getAssociatedObject(player, &VBYPlayerPausedAssociation);
-  return paused.boolValue;
-}
-
-static void VBYSetPlayerPaused(YTPlayerViewController *player, BOOL paused) {
-  if (!player) return;
-  objc_setAssociatedObject(player, &VBYPlayerPausedAssociation, @(paused),
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-  dispatch_async(dispatch_get_main_queue(), ^{
-    for (YTMainAppControlsOverlayView *view in [playerControlViews allObjects]) {
-      if (view.playerViewController != player) continue;
-      [view setNeedsLayout];
-      [view layoutIfNeeded];
-    }
-  });
-}
-
-static BOOL VBYShouldShowPlayerButton(YTMainAppControlsOverlayView *view) {
-  return VBYIsVolumeBoostYTEnabled() && VBYIsPlayerButtonEnabled() &&
-         VBYPlayerIsPaused(view.playerViewController);
-}
-
-static YTQTMButton *VBYPlayerButton(YTMainAppControlsOverlayView *view) {
-  YTQTMButton *button =
-      objc_getAssociatedObject(view, &VBYPlayerButtonAssociation);
-  if (button) return button;
-
-  UIImage *image = VBYAudioButtonImage();
-  CGFloat padding = 0.0;
-  if ([[view class] respondsToSelector:@selector(topButtonAdditionalPadding)])
-    padding = [[view class] topButtonAdditionalPadding];
-
-  if ([view respondsToSelector:
-                @selector(buttonWithImage:accessibilityLabel:
-                             verticalContentPadding:)]) {
-    button = [view buttonWithImage:image
-                accessibilityLabel:@"Audio controls"
-            verticalContentPadding:padding];
-  }
-
-  if (!button) {
-    Class buttonClass = NSClassFromString(@"YTQTMButton");
-    if ([buttonClass respondsToSelector:@selector(iconButton)])
-      button = [buttonClass iconButton];
-    else
-      button = (YTQTMButton *)[UIButton buttonWithType:UIButtonTypeSystem];
-    [button setImage:image forState:UIControlStateNormal];
-  }
-
+static UIButton *VBYCreateAudioButton(NSString *identifier) {
+  UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+  [button setImage:VBYAudioButtonImage() forState:UIControlStateNormal];
   button.tintColor = [UIColor whiteColor];
   button.accessibilityLabel = @"Audio controls";
-  button.accessibilityIdentifier = @"VBY.Player.AudioControls";
+  button.accessibilityIdentifier = identifier;
+  button.clipsToBounds = YES;
   button.hidden = YES;
-  button.alpha = 0.0;
   [button addTarget:[VBYAudioButtonTarget sharedTarget]
                 action:@selector(openAudioControls:)
       forControlEvents:UIControlEventTouchUpInside];
+  return button;
+}
 
-  @try {
-    UIView *container =
-        [view valueForKey:@"_topControlsAccessibilityContainerView"];
-    if (container)
-      [container addSubview:button];
-    else
-      [view addSubview:button];
-  } @catch (NSException *exception) {
-    [view addSubview:button];
+static BOOL VBYViewVisible(UIView *view) {
+  return view && !view.hidden && view.alpha > 0.05 &&
+         CGRectGetWidth(view.bounds) > 0.5 && CGRectGetHeight(view.bounds) > 0.5;
+}
+
+static CGRect VBYFrameInRoot(UIView *view, UIView *root) {
+  if (!view || !root) return CGRectNull;
+  return [view convertRect:view.bounds toView:root];
+}
+
+static BOOL VBYLooksLikePausedPlayControl(UIView *view, UIView *root) {
+  if (![view isKindOfClass:[UIControl class]] || !VBYViewVisible(view)) return NO;
+
+  NSString *label = view.accessibilityLabel.lowercaseString ?: @"";
+  NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
+
+  BOOL saysPlay =
+      [label isEqualToString:@"play"] ||
+      [label hasPrefix:@"play "] ||
+      [label containsString:@"play video"] ||
+      [identifier containsString:@"play_button"] ||
+      [identifier containsString:@"playbutton"];
+
+  if (!saysPlay || [label containsString:@"pause"]) return NO;
+
+  CGRect frame = VBYFrameInRoot(view, root);
+  if (CGRectIsNull(frame) || CGRectIsEmpty(frame)) return NO;
+
+  CGFloat width = CGRectGetWidth(root.bounds);
+  CGFloat height = CGRectGetHeight(root.bounds);
+  CGFloat midX = CGRectGetMidX(frame);
+  CGFloat midY = CGRectGetMidY(frame);
+
+  return CGRectGetWidth(frame) >= 38.0 && CGRectGetHeight(frame) >= 38.0 &&
+         fabs(midX - width * 0.5) <= width * 0.20 &&
+         midY >= height * 0.18 && midY <= height * 0.82;
+}
+
+static BOOL VBYPlayerOverlayIsPausedRecursive(UIView *view, UIView *root) {
+  if (VBYLooksLikePausedPlayControl(view, root)) return YES;
+  for (UIView *subview in view.subviews) {
+    if (VBYPlayerOverlayIsPausedRecursive(subview, root)) return YES;
   }
+  return NO;
+}
+
+static void VBYCollectPlayerTopControls(UIView *view, UIView *root,
+                                        UIButton *audio,
+                                        NSMutableArray<UIView *> *controls) {
+  if (view != root && view != audio &&
+      [view isKindOfClass:[UIControl class]] && VBYViewVisible(view)) {
+    CGRect frame = VBYFrameInRoot(view, root);
+    CGFloat width = CGRectGetWidth(root.bounds);
+    CGFloat height = CGRectGetHeight(root.bounds);
+
+    if (!CGRectIsNull(frame) && !CGRectIsEmpty(frame) &&
+        CGRectGetWidth(frame) >= 24.0 && CGRectGetWidth(frame) <= 96.0 &&
+        CGRectGetHeight(frame) >= 24.0 && CGRectGetHeight(frame) <= 72.0 &&
+        CGRectGetMidX(frame) >= width * 0.35 &&
+        CGRectGetMidY(frame) <= height * 0.30) {
+      [controls addObject:view];
+    }
+  }
+
+  for (UIView *subview in view.subviews)
+    VBYCollectPlayerTopControls(subview, root, audio, controls);
+}
+
+static BOOL VBYRectCollides(CGRect frame, NSArray<UIView *> *views,
+                            UIView *root) {
+  CGRect padded = CGRectInset(frame, -4.0, -4.0);
+  for (UIView *view in views) {
+    CGRect candidate = VBYFrameInRoot(view, root);
+    if (!CGRectIsNull(candidate) && !CGRectIsEmpty(candidate) &&
+        CGRectIntersectsRect(padded, candidate))
+      return YES;
+  }
+  return NO;
+}
+
+static UIButton *VBYPlayerButton(YTMainAppControlsOverlayView *view) {
+  UIButton *button = objc_getAssociatedObject(view, &VBYPlayerButtonAssociation);
+  if (button) return button;
+
+  button = VBYCreateAudioButton(@"VBY.Player.AudioControls");
+  button.backgroundColor = [UIColor clearColor];
+  button.layer.cornerRadius = 22.0;
+  [view addSubview:button];
 
   objc_setAssociatedObject(view, &VBYPlayerButtonAssociation, button,
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   return button;
 }
 
-static NSMutableArray *VBYPlayerControlsWithButton(
-    YTMainAppControlsOverlayView *view, NSArray *original) {
-  VBYTrackPlayerControls(view);
+static void VBYLayoutPlayerAudioButton(YTMainAppControlsOverlayView *view) {
+  if (!playerControlViews) playerControlViews = [NSHashTable weakObjectsHashTable];
+  [playerControlViews addObject:view];
 
-  YTQTMButton *button =
-      objc_getAssociatedObject(view, &VBYPlayerButtonAssociation);
-  BOOL show = VBYShouldShowPlayerButton(view);
+  UIButton *button = objc_getAssociatedObject(view, &VBYPlayerButtonAssociation);
 
-  if (!show) {
-    if (button) {
-      button.hidden = YES;
-      button.alpha = 0.0;
-    }
-    return [original mutableCopy] ?: [NSMutableArray array];
+  BOOL enabled = VBYIsVolumeBoostYTEnabled() && VBYIsPlayerButtonEnabled();
+  BOOL paused = enabled && VBYPlayerOverlayIsPausedRecursive(view, view);
+
+  if (!paused) {
+    if (button) button.hidden = YES;
+    VBYAudioPanelSetPlaying(YES);
+    return;
   }
 
+  VBYAudioPanelSetPlaying(NO);
   button = VBYPlayerButton(view);
-  button.hidden = NO;
 
-  NSMutableArray *controls =
-      [original mutableCopy] ?: [NSMutableArray array];
-  if (![controls containsObject:button]) {
-    NSUInteger index = controls.count > 0 ? controls.count - 1 : 0;
-    [controls insertObject:button atIndex:index];
+  NSMutableArray<UIView *> *controls = [NSMutableArray array];
+  VBYCollectPlayerTopControls(view, view, button, controls);
+
+  CGFloat rootWidth = CGRectGetWidth(view.bounds);
+  CGFloat rootHeight = CGRectGetHeight(view.bounds);
+  CGFloat size = 44.0;
+  CGFloat x = rootWidth - size - 8.0;
+  CGFloat centerY = MAX(26.0, rootHeight * 0.10);
+
+  if (controls.count > 0) {
+    UIView *leftmost = nil;
+    CGFloat minControlX = CGFLOAT_MAX;
+    for (UIView *control in controls) {
+      CGRect frame = VBYFrameInRoot(control, view);
+      if (CGRectGetMinX(frame) < minControlX) {
+        minControlX = CGRectGetMinX(frame);
+        leftmost = control;
+      }
+    }
+
+    if (leftmost) {
+      CGRect frame = VBYFrameInRoot(leftmost, view);
+      x = CGRectGetMinX(frame) - size - 8.0;
+      centerY = CGRectGetMidY(frame);
+    }
   }
-  return controls;
+
+  CGFloat minX = view.safeAreaInsets.left + 6.0;
+  x = MAX(minX, x);
+  CGRect target = CGRectMake(round(x), round(centerY - size * 0.5), size, size);
+
+  while (VBYRectCollides(target, controls, view) &&
+         CGRectGetMinX(target) - size - 8.0 >= minX) {
+    target.origin.x -= size + 8.0;
+  }
+
+  if (VBYRectCollides(target, controls, view)) {
+    button.hidden = YES;
+    return;
+  }
+
+  button.frame = target;
+  button.hidden = NO;
+  button.alpha = 1.0;
+  [view bringSubviewToFront:button];
 }
 
-static YTQTMButton *VBYShortsButton(YTReelWatchPlaybackOverlayView *view) {
-  YTQTMButton *button =
-      objc_getAssociatedObject(view, &VBYShortsButtonAssociation);
+static BOOL VBYKnownShortsAction(UIView *view) {
+  NSString *identifier = view.accessibilityIdentifier.lowercaseString ?: @"";
+  NSString *label = view.accessibilityLabel.lowercaseString ?: @"";
+
+  if ([identifier hasPrefix:@"vby."]) return NO;
+
+  if ([identifier isEqualToString:@"id.reel_like_button"] ||
+      [identifier isEqualToString:@"id.reel_comment_button"] ||
+      [identifier isEqualToString:@"id.reel_share_button"] ||
+      [identifier isEqualToString:@"id.reel_remix_button"] ||
+      [identifier isEqualToString:@"id.reel_pivot_button"] ||
+      [identifier containsString:@"reel_save"] ||
+      [identifier containsString:@"reel_dislike"])
+    return YES;
+
+  return [label isEqualToString:@"like"] ||
+         [label hasPrefix:@"comments"] ||
+         [label isEqualToString:@"comment"] ||
+         [label isEqualToString:@"save"] ||
+         [label isEqualToString:@"share"] ||
+         [label isEqualToString:@"remix"];
+}
+
+static void VBYCollectShortsActions(UIView *view, UIView *root,
+                                    BOOL generic,
+                                    NSMutableArray<UIView *> *actions) {
+  if (view != root && [view isKindOfClass:[UIControl class]] &&
+      VBYViewVisible(view)) {
+    CGRect frame = VBYFrameInRoot(view, root);
+    CGFloat width = CGRectGetWidth(root.bounds);
+    CGFloat height = CGRectGetHeight(root.bounds);
+
+    BOOL geometry =
+        !CGRectIsNull(frame) && !CGRectIsEmpty(frame) &&
+        CGRectGetWidth(frame) >= 24.0 && CGRectGetWidth(frame) <= 88.0 &&
+        CGRectGetHeight(frame) >= 24.0 && CGRectGetHeight(frame) <= 88.0 &&
+        CGRectGetMidX(frame) >= width * 0.70 &&
+        CGRectGetMidY(frame) >= height * 0.18 &&
+        CGRectGetMidY(frame) <= height * 0.94;
+
+    if (geometry && (VBYKnownShortsAction(view) || generic))
+      [actions addObject:view];
+  }
+
+  for (UIView *subview in view.subviews)
+    VBYCollectShortsActions(subview, root, generic, actions);
+}
+
+static UIButton *VBYShortsButton(YTReelWatchPlaybackOverlayView *view) {
+  UIButton *button = objc_getAssociatedObject(view, &VBYShortsButtonAssociation);
   if (button) return button;
 
-  Class buttonClass = NSClassFromString(@"YTQTMButton");
-  if ([buttonClass respondsToSelector:@selector(iconButton)])
-    button = [buttonClass iconButton];
-  else
-    button = (YTQTMButton *)[UIButton buttonWithType:UIButtonTypeSystem];
-
-  [button setImage:VBYAudioButtonImage() forState:UIControlStateNormal];
-  button.tintColor = [UIColor whiteColor];
-  button.accessibilityLabel = @"Audio controls";
-  button.accessibilityIdentifier = @"VBY.Shorts.AudioControls";
-  if ([button respondsToSelector:@selector(setMinHitTargetSize:)])
-    button.minHitTargetSize = 44.0;
-  [button addTarget:[VBYAudioButtonTarget sharedTarget]
-                action:@selector(openAudioControls:)
-      forControlEvents:UIControlEventTouchUpInside];
+  button = VBYCreateAudioButton(@"VBY.Shorts.AudioControls");
+  button.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.28];
+  button.layer.cornerRadius = 22.0;
+  button.layer.borderWidth = 0.5;
+  button.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.16].CGColor;
   [view addSubview:button];
 
   objc_setAssociatedObject(view, &VBYShortsButtonAssociation, button,
@@ -365,46 +433,105 @@ static YTQTMButton *VBYShortsButton(YTReelWatchPlaybackOverlayView *view) {
   return button;
 }
 
-static NSUInteger VBYShortsInsertionIndex(NSArray<YTQTMButton *> *buttons) {
-  NSArray<NSString *> *preferred = @[
-    @"id.reel_share_button",
-    @"id.reel_remix_button",
-    @"id.reel_pivot_button"
-  ];
+static NSComparisonResult VBYCompareViewsByY(id first, id second,
+                                             void *context) {
+  UIView *root = (__bridge UIView *)context;
+  CGRect a = VBYFrameInRoot((UIView *)first, root);
+  CGRect b = VBYFrameInRoot((UIView *)second, root);
+  CGFloat ay = CGRectGetMinY(a);
+  CGFloat by = CGRectGetMinY(b);
+  if (ay < by) return NSOrderedAscending;
+  if (ay > by) return NSOrderedDescending;
+  return NSOrderedSame;
+}
 
-  for (NSString *identifier in preferred) {
-    for (NSUInteger i = 0; i < buttons.count; i++) {
-      NSString *candidate =
-          buttons[i].accessibilityIdentifier.lowercaseString ?: @"";
-      if ([candidate isEqualToString:identifier]) return i;
+static void VBYLayoutShortsAudioButton(YTReelWatchPlaybackOverlayView *view) {
+  if (!shortsControlViews) shortsControlViews = [NSHashTable weakObjectsHashTable];
+  [shortsControlViews addObject:view];
+
+  UIButton *button = objc_getAssociatedObject(view, &VBYShortsButtonAssociation);
+
+  BOOL enabled = VBYIsVolumeBoostYTEnabled() && VBYIsShortsButtonEnabled();
+  if (!enabled) {
+    if (button) button.hidden = YES;
+    return;
+  }
+
+  NSMutableArray<UIView *> *actions = [NSMutableArray array];
+  VBYCollectShortsActions(view, view, NO, actions);
+  if (actions.count == 0)
+    VBYCollectShortsActions(view, view, YES, actions);
+
+  if (actions.count == 0) {
+    if (button) button.hidden = YES;
+    return;
+  }
+
+  [actions sortUsingFunction:VBYCompareViewsByY context:(__bridge void *)view];
+
+  button = VBYShortsButton(view);
+
+  CGFloat size = 44.0;
+  CGFloat gap = 10.0;
+  CGFloat safeTop = view.safeAreaInsets.top + 8.0;
+  CGFloat safeBottom = CGRectGetHeight(view.bounds) - view.safeAreaInsets.bottom - 8.0;
+
+  CGRect first = VBYFrameInRoot(actions.firstObject, view);
+  CGFloat centerX = CGRectGetMidX(first);
+  CGRect target = CGRectMake(round(centerX - size * 0.5),
+                             round(CGRectGetMinY(first) - gap - size),
+                             size, size);
+
+  BOOL found = CGRectGetMinY(target) >= safeTop &&
+               !VBYRectCollides(target, actions, view);
+
+  if (!found && actions.count > 1) {
+    for (NSUInteger i = 0; i + 1 < actions.count; i++) {
+      CGRect upper = VBYFrameInRoot(actions[i], view);
+      CGRect lower = VBYFrameInRoot(actions[i + 1], view);
+      CGFloat available = CGRectGetMinY(lower) - CGRectGetMaxY(upper);
+      if (available < size + 8.0) continue;
+
+      centerX = (CGRectGetMidX(upper) + CGRectGetMidX(lower)) * 0.5;
+      target = CGRectMake(round(centerX - size * 0.5),
+                          round(CGRectGetMaxY(upper) + (available - size) * 0.5),
+                          size, size);
+
+      if (!VBYRectCollides(target, actions, view)) {
+        found = YES;
+        break;
+      }
     }
   }
 
-  return buttons.count;
+  if (!found) {
+    CGRect last = VBYFrameInRoot(actions.lastObject, view);
+    centerX = CGRectGetMidX(last);
+    target = CGRectMake(round(centerX - size * 0.5),
+                        round(CGRectGetMaxY(last) + gap),
+                        size, size);
+    found = CGRectGetMaxY(target) <= safeBottom &&
+            !VBYRectCollides(target, actions, view);
+  }
+
+  if (!found) {
+    button.hidden = YES;
+    return;
+  }
+
+  button.frame = target;
+  button.hidden = NO;
+  button.alpha = 1.0;
+  [view bringSubviewToFront:button];
 }
 
 static void VBYRefreshNativeButtons(void) {
   dispatch_async(dispatch_get_main_queue(), ^{
-    for (YTMainAppControlsOverlayView *view in [playerControlViews allObjects]) {
-      YTQTMButton *button =
-          objc_getAssociatedObject(view, &VBYPlayerButtonAssociation);
-      BOOL show = VBYShouldShowPlayerButton(view);
-      if (button) {
-        button.hidden = !show;
-        if (!show) button.alpha = 0.0;
-      }
+    for (YTMainAppControlsOverlayView *view in [playerControlViews allObjects])
       [view setNeedsLayout];
-    }
 
-    BOOL showShorts =
-        VBYIsVolumeBoostYTEnabled() && VBYIsShortsButtonEnabled();
-    for (YTReelWatchPlaybackOverlayView *view in
-         [shortsControlViews allObjects]) {
-      YTQTMButton *button =
-          objc_getAssociatedObject(view, &VBYShortsButtonAssociation);
-      if (button) button.hidden = !showShorts;
+    for (YTReelWatchPlaybackOverlayView *view in [shortsControlViews allObjects])
       [view setNeedsLayout];
-    }
   });
 }
 
@@ -412,8 +539,7 @@ static void VBYRefreshNativeButtons(void) {
 
 - (void)setVolume:(float)volume {
   RegisterRenderer(self);
-  if (VBYIsVolumeBoostYTEnabled())
-    volume *= GetLogarithmicAudioMultiplier();
+  if (VBYIsVolumeBoostYTEnabled()) volume *= GetLogarithmicAudioMultiplier();
   %orig(volume);
 }
 
@@ -429,8 +555,7 @@ static void VBYRefreshNativeButtons(void) {
 
 - (void)setVolume:(float)volume {
   RegisterRenderer(self);
-  if (VBYIsVolumeBoostYTEnabled())
-    volume *= GetLogarithmicAudioMultiplier();
+  if (VBYIsVolumeBoostYTEnabled()) volume *= GetLogarithmicAudioMultiplier();
   %orig(volume);
 }
 
@@ -438,8 +563,7 @@ static void VBYRefreshNativeButtons(void) {
 
 %hook AVAudioPlayer
 
-- (instancetype)initWithContentsOfURL:(NSURL *)url
-                                error:(NSError **)outError {
+- (instancetype)initWithContentsOfURL:(NSURL *)url error:(NSError **)outError {
   id result = %orig(url, outError);
   RegisterRenderer(result);
   return result;
@@ -453,8 +577,7 @@ static void VBYRefreshNativeButtons(void) {
 
 - (void)setVolume:(float)volume {
   RegisterRenderer(self);
-  if (VBYIsVolumeBoostYTEnabled())
-    volume *= GetLogarithmicAudioMultiplier();
+  if (VBYIsVolumeBoostYTEnabled()) volume *= GetLogarithmicAudioMultiplier();
   %orig(volume);
 }
 
@@ -470,8 +593,7 @@ static void VBYRefreshNativeButtons(void) {
 
 - (void)setVolume:(float)volume {
   RegisterRenderer(self);
-  if (VBYIsVolumeBoostYTEnabled())
-    volume *= GetLogarithmicAudioMultiplier();
+  if (VBYIsVolumeBoostYTEnabled()) volume *= GetLogarithmicAudioMultiplier();
   %orig(volume);
 }
 
@@ -479,61 +601,11 @@ static void VBYRefreshNativeButtons(void) {
 
 %group NativePlayerControls
 
-%hook YTPlayerViewController
-
-- (void)play {
-  %orig;
-  VBYSetPlayerPaused(self, NO);
-  VBYAudioPanelSetPlaying(YES);
-}
-
-- (void)pause {
-  %orig;
-  VBYSetPlayerPaused(self, YES);
-  VBYAudioPanelSetPlaying(NO);
-}
-
-%end
-
 %hook YTMainAppControlsOverlayView
-
-- (NSMutableArray *)topButtonControls {
-  NSArray *original = %orig;
-  return VBYPlayerControlsWithButton(self, original);
-}
-
-- (NSMutableArray *)topControls {
-  NSArray *original = %orig;
-  return VBYPlayerControlsWithButton(self, original);
-}
-
-- (void)setTopOverlayVisible:(BOOL)visible
-      isAutonavCanceledState:(BOOL)canceledState {
-  %orig(visible, canceledState);
-  VBYTrackPlayerControls(self);
-
-  YTQTMButton *button =
-      objc_getAssociatedObject(self, &VBYPlayerButtonAssociation);
-  BOOL show = VBYShouldShowPlayerButton(self);
-
-  if (show && !button) button = VBYPlayerButton(self);
-  if (!button) return;
-
-  button.hidden = !show;
-  button.alpha = show && visible && !canceledState ? 1.0 : 0.0;
-}
 
 - (void)layoutSubviews {
   %orig;
-  VBYTrackPlayerControls(self);
-
-  YTQTMButton *button =
-      objc_getAssociatedObject(self, &VBYPlayerButtonAssociation);
-  if (!button) return;
-
-  BOOL show = VBYShouldShowPlayerButton(self);
-  button.hidden = !show;
-  if (!show) button.alpha = 0.0;
+  VBYLayoutPlayerAudioButton(self);
 }
 
 %end
@@ -544,42 +616,9 @@ static void VBYRefreshNativeButtons(void) {
 
 %hook YTReelWatchPlaybackOverlayView
 
-- (NSArray<YTQTMButton *> *)orderedRightSideButtons {
-  NSArray<YTQTMButton *> *original = %orig;
-  VBYTrackShortsControls(self);
-
-  YTQTMButton *button =
-      objc_getAssociatedObject(self, &VBYShortsButtonAssociation);
-  BOOL show = VBYIsVolumeBoostYTEnabled() && VBYIsShortsButtonEnabled();
-
-  if (!show) {
-    if (button) button.hidden = YES;
-    return original;
-  }
-
-  button = VBYShortsButton(self);
-  button.hidden = NO;
-  button.alpha = 1.0;
-
-  NSMutableArray<YTQTMButton *> *buttons =
-      [original mutableCopy] ?: [NSMutableArray array];
-  if (![buttons containsObject:button]) {
-    NSUInteger index = VBYShortsInsertionIndex(buttons);
-    [buttons insertObject:button atIndex:index];
-  }
-
-  return buttons.copy;
-}
-
 - (void)layoutSubviews {
   %orig;
-  VBYTrackShortsControls(self);
-
-  YTQTMButton *button =
-      objc_getAssociatedObject(self, &VBYShortsButtonAssociation);
-  if (button)
-    button.hidden =
-        !(VBYIsVolumeBoostYTEnabled() && VBYIsShortsButtonEnabled());
+  VBYLayoutShortsAudioButton(self);
 }
 
 %end
@@ -592,9 +631,7 @@ static void VBYRefreshNativeButtons(void) {
 
 - (NSArray<NSNumber *> *)orderedCategories {
   if (self.type != 1) return %orig;
-
-  if (class_getClassMethod(objc_getClass("YTSettingsGroupData"),
-                           @selector(tweaks)))
+  if (class_getClassMethod(objc_getClass("YTSettingsGroupData"), @selector(tweaks)))
     return %orig;
 
   NSArray<NSNumber *> *categories = %orig;
@@ -635,8 +672,7 @@ static void VBYRefreshNativeButtons(void) {
 
 %new(v@:@)
 - (void)updateVolumeBoostYTSectionWithEntry:(id)entry {
-  NSMutableArray<YTSettingsSectionItem *> *sectionItems =
-      [NSMutableArray array];
+  NSMutableArray<YTSettingsSectionItem *> *sectionItems = [NSMutableArray array];
   Class itemClass = %c(YTSettingsSectionItem);
   if (!itemClass) return;
 
@@ -649,10 +685,8 @@ static void VBYRefreshNativeButtons(void) {
       accessibilityIdentifier:nil
                      switchOn:VBYIsVolumeBoostYTEnabled()
                   switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
-                    NSUserDefaults *defaults =
-                        [NSUserDefaults standardUserDefaults];
-                    [defaults setBool:enabled
-                               forKey:kVolumeBoostYTEnabledKey];
+                    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+                    [defaults setBool:enabled forKey:kVolumeBoostYTEnabledKey];
                     [defaults synchronize];
                     VBYAudioEngineSetMasterEnabled(enabled);
                     NotifyVolumeChange();
@@ -693,17 +727,13 @@ static void VBYRefreshNativeButtons(void) {
       accessibilityIdentifier:nil
                      switchOn:VBYIsRememberVolumeEnabled()
                   switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
-                    NSUserDefaults *defaults =
-                        [NSUserDefaults standardUserDefaults];
+                    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
                     float value = VBYGetVolumeMultiplier();
-                    [defaults setBool:enabled
-                               forKey:kRememberVolumeEnabledKey];
+                    [defaults setBool:enabled forKey:kRememberVolumeEnabledKey];
                     if (enabled)
-                      [defaults setFloat:value
-                                  forKey:kCustomYouTubeVolumeScalarKey];
+                      [defaults setFloat:value forKey:kCustomYouTubeVolumeScalarKey];
                     else
-                      [defaults removeObjectForKey:
-                                    kCustomYouTubeVolumeScalarKey];
+                      [defaults removeObjectForKey:kCustomYouTubeVolumeScalarKey];
                     [defaults synchronize];
                     return YES;
                   }
@@ -747,9 +777,7 @@ static void VBYRefreshNativeButtons(void) {
   [sectionItems addObject:legacyUI];
 
   if ([settingsViewController
-          respondsToSelector:@selector(
-              setSectionItems:forCategory:title:icon:titleDescription:
-                  headerHidden:)]) {
+          respondsToSelector:@selector(setSectionItems:forCategory:title:icon:titleDescription:headerHidden:)]) {
     [settingsViewController setSectionItems:sectionItems
                                 forCategory:TweakSection
                                       title:@"VolumeBoostYT"
@@ -757,9 +785,7 @@ static void VBYRefreshNativeButtons(void) {
                            titleDescription:nil
                                headerHidden:NO];
   } else if ([settingsViewController
-                 respondsToSelector:@selector(
-                     setSectionItems:forCategory:title:titleDescription:
-                         headerHidden:)]) {
+                 respondsToSelector:@selector(setSectionItems:forCategory:title:titleDescription:headerHidden:)]) {
     [settingsViewController setSectionItems:sectionItems
                                 forCategory:TweakSection
                                       title:@"VolumeBoostYT"
@@ -789,8 +815,7 @@ static void VBYRefreshNativeButtons(void) {
   VBYAudioEngineSetMasterEnabled(VBYIsVolumeBoostYTEnabled());
 
   %init(YouTubeSettings);
-  if (NSClassFromString(@"YTPlayerViewController") &&
-      NSClassFromString(@"YTMainAppControlsOverlayView"))
+  if (NSClassFromString(@"YTMainAppControlsOverlayView"))
     %init(NativePlayerControls);
   if (NSClassFromString(@"YTReelWatchPlaybackOverlayView"))
     %init(ShortsControls);
