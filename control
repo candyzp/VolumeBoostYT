@@ -1,8 +1,8 @@
 Package: com.vasirakcalgux.volumeboostyt
 Name: VolumeBoostYT
-Version: 1.0.7
+Version: 1.1.0
 Architecture: iphoneos-arm64
-Description: Volume control tweak for YouTube on iOS.
+Description: Volume, pitch, and equalizer controls for YouTube on iOS.
 Maintainer: vasirakcalgux
 Author: vasirakcalgux
 Section: Tweaks
