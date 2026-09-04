@@ -7,12 +7,10 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = VolumeBoostYT
 
-VolumeBoostYT_FILES = Tweak.x PlaybackPersistence.x YTVolumeHUD.m
+VolumeBoostYT_FILES = Tweak.x PlaybackPersistence.x AudioEffects.m AudioPanel.m YTVolumeHUD.m $(THEOS)/vendor/orion/fishhook/fishhook.c
+VolumeBoostYT_CFLAGS = -I$(THEOS)/vendor/orion/fishhook
 VolumeBoostYT_OBJCFLAGS = -fobjc-arc
-VolumeBoostYT_FRAMEWORKS = UIKit AVFoundation AudioToolbox
+VolumeBoostYT_FRAMEWORKS = UIKit AVFoundation AudioToolbox AudioUnit
 VolumeBoostYT_LOGOSFLAGS = -c generator=internal
-
-before-all::
-	@python3 -c 'p="Tweak.x"; s=open(p).read(); s=s.replace("#define ENABLE_VOLUME_PERSISTENCE 0", "#define ENABLE_VOLUME_PERSISTENCE 1").replace("  NSMutableArray *mutableCategories = %orig.mutableCopy;", "  NSArray<NSNumber *> *categories = %orig;\\n  NSMutableArray<NSNumber *> *mutableCategories = [categories mutableCopy];"); open(p, "w").write(s)'
 
 include $(THEOS_MAKE_PATH)/tweak.mk
