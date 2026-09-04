@@ -10,7 +10,7 @@ TWEAK_NAME = VolumeBoostYT
 VolumeBoostYT_FILES = Tweak.x PlaybackPersistence.x AudioEffects.m AudioPanel.m YTVolumeHUD.m $(THEOS)/vendor/orion/fishhook/fishhook.c
 VolumeBoostYT_CFLAGS = -I$(THEOS)/vendor/orion/fishhook
 VolumeBoostYT_OBJCFLAGS = -fobjc-arc
-VolumeBoostYT_FRAMEWORKS = UIKit AVFoundation AudioToolbox AudioUnit
+VolumeBoostYT_FRAMEWORKS = UIKit AVFoundation AudioToolbox
 VolumeBoostYT_LOGOSFLAGS = -c generator=internal
 
 include $(THEOS_MAKE_PATH)/tweak.mk
