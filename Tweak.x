@@ -1,7 +1,7 @@
 #import "YTVolumeHUD.h"
 #import <AVFoundation/AVFoundation.h>
-#import <AudioToolbox/AudioToolbox.h>
 #import <UIKit/UIKit.h>
+#import <math.h>
 #import <objc/runtime.h>
 
 @interface YTSettingsCell : UITableViewCell
@@ -52,6 +52,7 @@ static NSString *const kCustomYouTubeVolumeScalarKey =
 
 static BOOL cachedVolumeBoostEnabled = YES;
 static BOOL cachedRememberVolumeEnabled = YES;
+static BOOL supportsTweaksCategoryAPI = NO;
 static float currentVolumeMultiplier = 1.0f;
 static float cachedAudioMultiplier = 1.0f;
 static BOOL preferencesLoaded = NO;
@@ -100,6 +101,10 @@ static void LoadPreferencesIfNeeded(void) {
   cachedAudioMultiplier = CalculateAudioMultiplier(currentVolumeMultiplier);
 }
 
+BOOL VBIsEnabled(void) {
+  return cachedVolumeBoostEnabled;
+}
+
 static inline BOOL IsVolumeBoostYTEnabled(void) {
   return cachedVolumeBoostEnabled;
 }
@@ -144,6 +149,8 @@ void VBReapplyTrackedRenderers(void) {
   NSArray *snapshot = nil;
 
   @synchronized(table) {
+    if (table.count == 0)
+      return;
     snapshot = [table allObjects];
   }
 
@@ -171,23 +178,19 @@ static void PersistCurrentVolumeIfNeeded(void) {
         forKey:kCustomYouTubeVolumeScalarKey];
 }
 
-static void SetCustomVolumeMultiplier(float multiplier) {
+static BOOL SetCustomVolumeMultiplier(float multiplier) {
   multiplier = ClampVolumeMultiplier(multiplier);
 
   if (fabsf(multiplier - currentVolumeMultiplier) < 0.0001f)
-    return;
+    return NO;
 
   currentVolumeMultiplier = multiplier;
   cachedAudioMultiplier = CalculateAudioMultiplier(multiplier);
   VBReapplyTrackedRenderers();
+  return YES;
 }
 
 %hook AVPlayer
-- (instancetype)init {
-  id orig = %orig;
-  VBRegisterRenderer(orig);
-  return orig;
-}
 - (void)setVolume:(float)volume {
   VBRegisterRenderer(self);
   if (IsVolumeBoostYTEnabled()) {
@@ -198,11 +201,6 @@ static void SetCustomVolumeMultiplier(float multiplier) {
 %end
 
 %hook AVAudioPlayerNode
-- (instancetype)init {
-  id orig = %orig;
-  VBRegisterRenderer(orig);
-  return orig;
-}
 - (void)setVolume:(float)volume {
   VBRegisterRenderer(self);
   if (IsVolumeBoostYTEnabled()) {
@@ -213,16 +211,6 @@ static void SetCustomVolumeMultiplier(float multiplier) {
 %end
 
 %hook AVAudioPlayer
-- (instancetype)initWithContentsOfURL:(NSURL *)url error:(NSError **)outError {
-  id orig = %orig;
-  VBRegisterRenderer(orig);
-  return orig;
-}
-- (instancetype)initWithData:(NSData *)data error:(NSError **)outError {
-  id orig = %orig;
-  VBRegisterRenderer(orig);
-  return orig;
-}
 - (void)setVolume:(float)volume {
   VBRegisterRenderer(self);
   if (IsVolumeBoostYTEnabled()) {
@@ -233,11 +221,6 @@ static void SetCustomVolumeMultiplier(float multiplier) {
 %end
 
 %hook AVSampleBufferAudioRenderer
-- (instancetype)init {
-  id orig = %orig;
-  VBRegisterRenderer(orig);
-  return orig;
-}
 - (void)setVolume:(float)volume {
   VBRegisterRenderer(self);
   if (IsVolumeBoostYTEnabled()) {
@@ -294,7 +277,12 @@ static CGPoint initialTouchPoint;
         possibleVolumeGesture = NO;
         initialTouchPoint = location;
         gestureStartMultiplier = GetCustomVolumeMultiplier();
-        [[YTVolumeHUD sharedHUD] showWithValue:gestureStartMultiplier];
+
+        YTVolumeHUD *hud = [YTVolumeHUD sharedHUD];
+        [NSObject cancelPreviousPerformRequestsWithTarget:hud
+                                                 selector:@selector(hide)
+                                                   object:nil];
+        [hud showWithValue:gestureStartMultiplier];
         return;
       } else if (dy > 20.0f || dx < -10.0f) {
         possibleVolumeGesture = NO;
@@ -309,8 +297,9 @@ static CGPoint initialTouchPoint;
       float newMultiplier =
           ClampVolumeMultiplier(gestureStartMultiplier + deltaMultiplier);
 
-      SetCustomVolumeMultiplier(newMultiplier);
-      [[YTVolumeHUD sharedHUD] showWithValue:newMultiplier];
+      if (SetCustomVolumeMultiplier(newMultiplier)) {
+        [[YTVolumeHUD sharedHUD] showWithValue:newMultiplier];
+      }
       return;
     }
     break;
@@ -347,22 +336,25 @@ static CGPoint initialTouchPoint;
   if (self.type != 1)
     return %orig;
 
-  if (class_getClassMethod(objc_getClass("YTSettingsGroupData"),
-                           @selector(tweaks))) {
+  if (supportsTweaksCategoryAPI) {
     return %orig;
   }
 
   NSArray<NSNumber *> *categories = %orig;
   NSMutableArray<NSNumber *> *mutableCategories = [categories mutableCopy];
-  if (mutableCategories) {
+  if (mutableCategories &&
+      ![mutableCategories containsObject:@(TweakSection)]) {
     [mutableCategories insertObject:@(TweakSection) atIndex:0];
   }
   return mutableCategories.copy ?: categories;
 }
 
 + (NSMutableArray<NSNumber *> *)tweaks {
-  NSMutableArray<NSNumber *> *tweaks = %orig;
-  if (tweaks && ![tweaks containsObject:@(TweakSection)]) {
+  NSArray<NSNumber *> *original = %orig;
+  NSMutableArray<NSNumber *> *tweaks =
+      original ? [original mutableCopy] : [NSMutableArray array];
+
+  if (![tweaks containsObject:@(TweakSection)]) {
     [tweaks addObject:@(TweakSection)];
   }
   return tweaks;
@@ -374,6 +366,9 @@ static CGPoint initialTouchPoint;
 
 + (NSArray<NSNumber *> *)settingsCategoryOrder {
   NSArray<NSNumber *> *order = %orig;
+  if (!order || [order containsObject:@(TweakSection)])
+    return order;
+
   NSUInteger insertIndex = [order indexOfObject:@(1)];
 
   if (insertIndex != NSNotFound) {
@@ -382,7 +377,7 @@ static CGPoint initialTouchPoint;
     return mutableOrder.copy;
   }
 
-  return order ?: %orig;
+  return order;
 }
 
 %end
@@ -398,8 +393,16 @@ static CGPoint initialTouchPoint;
   if (!YTSettingsSectionItemClass)
     return;
 
-  YTSettingsViewController *settingsViewController =
-      [self valueForKey:@"_settingsViewControllerDelegate"];
+  YTSettingsViewController *settingsViewController = nil;
+  @try {
+    settingsViewController =
+        [self valueForKey:@"_settingsViewControllerDelegate"];
+  } @catch (__unused NSException *exception) {
+    return;
+  }
+
+  if (!settingsViewController)
+    return;
 
   YTSettingsSectionItem *enableTweak = [YTSettingsSectionItemClass
           switchItemWithTitle:@"Enable VolumeBoostYT"
@@ -475,13 +478,20 @@ static CGPoint initialTouchPoint;
 
 %ctor {
   NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-  if ([bundleID isEqualToString:@"com.apple.springboard"]) {
+  BOOL isYouTubeProcess =
+      [bundleID isEqualToString:@"com.google.ios.youtube"] ||
+      NSClassFromString(@"YTSettingsGroupData") != Nil ||
+      NSClassFromString(@"YTAppSettingsPresentationData") != Nil;
+
+  if (!isYouTubeProcess)
     return;
-  }
 
   LoadPreferencesIfNeeded();
 
-  if (NSClassFromString(@"YTSettingsGroupData")) {
+  Class settingsGroupClass = NSClassFromString(@"YTSettingsGroupData");
+  if (settingsGroupClass) {
+    supportsTweaksCategoryAPI =
+        class_getClassMethod(settingsGroupClass, @selector(tweaks)) != NULL;
     %init(YouTubeSettings);
   }
 

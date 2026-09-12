@@ -1,5 +1,10 @@
 #import "YTVolumeHUD.h"
 #import <UIKit/UIKit.h>
+#import <math.h>
+
+@interface YTVolumeHUD ()
+@property(nonatomic, assign) NSInteger lastDisplayedPercent;
+@end
 
 @implementation YTVolumeHUD
 
@@ -20,6 +25,7 @@
     self.clipsToBounds = YES;
     self.userInteractionEnabled = NO;
     self.alpha = 0.0;
+    self.lastDisplayedPercent = NSIntegerMin;
 
     self.textLabel = [[UILabel alloc] initWithFrame:self.bounds];
     self.textLabel.textColor = [UIColor whiteColor];
@@ -30,56 +36,73 @@
   return self;
 }
 
-- (void)showWithValue:(float)value {
-  self.textLabel.text =
-      [NSString stringWithFormat:@"App Vol: %.0f%%", value * 100];
+- (UIWindow *)activeWindow {
+  if ([self.superview isKindOfClass:[UIWindow class]]) {
+    UIWindow *currentWindow = (UIWindow *)self.superview;
+    if (!currentWindow.hidden) {
+      return currentWindow;
+    }
+  }
 
-  UIWindow *window = nil;
   if (@available(iOS 13.0, *)) {
-    for (UIWindowScene *scene in [UIApplication sharedApplication]
-             .connectedScenes) {
-      if (scene.activationState == UISceneActivationStateForegroundActive) {
-        for (UIWindow *w in scene.windows) {
-          if (w.isKeyWindow) {
-            window = w;
-            break;
-          }
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+      if (scene.activationState != UISceneActivationStateForegroundActive ||
+          ![scene isKindOfClass:[UIWindowScene class]]) {
+        continue;
+      }
+
+      for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+        if (window.isKeyWindow) {
+          return window;
         }
-        if (window)
-          break;
       }
     }
   } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    window = [UIApplication sharedApplication].keyWindow;
+    return [UIApplication sharedApplication].keyWindow;
 #pragma clang diagnostic pop
   }
 
+  return nil;
+}
+
+- (void)showWithValue:(float)value {
+  NSInteger percent = lroundf(value * 100.0f);
+  if (percent != self.lastDisplayedPercent) {
+    self.lastDisplayedPercent = percent;
+    self.textLabel.text =
+        [NSString stringWithFormat:@"App Vol: %ld%%", (long)percent];
+  }
+
+  UIWindow *window = [self activeWindow];
   if (!window)
     return;
 
-  if (self.superview != window) {
+  BOOL newlyAdded = self.superview != window;
+  if (newlyAdded) {
     [window addSubview:self];
+    [window bringSubviewToFront:self];
   }
 
-  // Center it near the top of the screen below the status bar
-  self.center = CGPointMake(window.bounds.size.width / 2.0, 80);
-  [window bringSubviewToFront:self];
+  CGPoint targetCenter = CGPointMake(window.bounds.size.width / 2.0, 80.0);
+  if (!CGPointEqualToPoint(self.center, targetCenter)) {
+    self.center = targetCenter;
+  }
 
-  [UIView animateWithDuration:0.2
-                   animations:^{
-                     self.alpha = 1.0;
-                   }];
-
-  [NSObject cancelPreviousPerformRequestsWithTarget:self
-                                           selector:@selector(hide)
-                                             object:nil];
-  [self performSelector:@selector(hide) withObject:nil afterDelay:1.5];
+  if (self.alpha < 0.99) {
+    [UIView animateWithDuration:0.15
+                     animations:^{
+                       self.alpha = 1.0;
+                     }];
+  }
 }
 
 - (void)hide {
-  [UIView animateWithDuration:0.3
+  if (!self.superview)
+    return;
+
+  [UIView animateWithDuration:0.25
       animations:^{
         self.alpha = 0.0;
       }

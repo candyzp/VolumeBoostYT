@@ -1,28 +1,44 @@
 #import <AVFoundation/AVFoundation.h>
+#import <CoreFoundation/CoreFoundation.h>
 
+extern BOOL VBIsEnabled(void);
 extern void VBRegisterRenderer(id renderer);
 extern void VBApplyBaseVolume(id renderer);
 extern void VBReapplyTrackedRenderers(void);
 
 static BOOL repairBurstActive = NO;
 static BOOL repairBurstNeedsTail = NO;
+static CFAbsoluteTime repairBurstStartTime = 0.0;
+
+static const NSTimeInterval kEarlyRepairDelay = 0.06;
+static const NSTimeInterval kMidRepairDelay = 0.22;
+static const NSTimeInterval kFinalRepairDelay = 0.60;
 
 static void StartRepairBurstOnMain(void);
+
+static inline void ResetRepairBurstState(void) {
+  repairBurstActive = NO;
+  repairBurstNeedsTail = NO;
+  repairBurstStartTime = 0.0;
+}
 
 static inline void ScheduleTrackedReapply(NSTimeInterval delay) {
   dispatch_after(
       dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
       dispatch_get_main_queue(), ^{
-        VBReapplyTrackedRenderers();
+        if (VBIsEnabled()) {
+          VBReapplyTrackedRenderers();
+        }
       });
 }
 
 static void FinishRepairBurstOnMain(void) {
-  VBReapplyTrackedRenderers();
+  if (VBIsEnabled()) {
+    VBReapplyTrackedRenderers();
+  }
 
-  BOOL needsTail = repairBurstNeedsTail;
-  repairBurstActive = NO;
-  repairBurstNeedsTail = NO;
+  BOOL needsTail = repairBurstNeedsTail && VBIsEnabled();
+  ResetRepairBurstState();
 
   if (needsTail) {
     StartRepairBurstOnMain();
@@ -30,27 +46,43 @@ static void FinishRepairBurstOnMain(void) {
 }
 
 static void StartRepairBurstOnMain(void) {
+  if (!VBIsEnabled()) {
+    ResetRepairBurstState();
+    return;
+  }
+
   if (repairBurstActive) {
-    repairBurstNeedsTail = YES;
+    if ((CFAbsoluteTimeGetCurrent() - repairBurstStartTime) >=
+        kMidRepairDelay) {
+      repairBurstNeedsTail = YES;
+    }
     return;
   }
 
   repairBurstActive = YES;
   repairBurstNeedsTail = NO;
+  repairBurstStartTime = CFAbsoluteTimeGetCurrent();
 
-  ScheduleTrackedReapply(0.06);
-  ScheduleTrackedReapply(0.22);
+  ScheduleTrackedReapply(kEarlyRepairDelay);
+  ScheduleTrackedReapply(kMidRepairDelay);
   dispatch_after(
-      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.60 * NSEC_PER_SEC)),
+      dispatch_time(DISPATCH_TIME_NOW,
+                    (int64_t)(kFinalRepairDelay * NSEC_PER_SEC)),
       dispatch_get_main_queue(), ^{
         FinishRepairBurstOnMain();
       });
 }
 
 static void RequestRepair(id renderer) {
+  if (!VBIsEnabled())
+    return;
+
   __weak id weakRenderer = renderer;
 
   void (^work)(void) = ^{
+    if (!VBIsEnabled())
+      return;
+
     id strongRenderer = weakRenderer;
     if (strongRenderer) {
       VBApplyBaseVolume(strongRenderer);
