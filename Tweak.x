@@ -4,7 +4,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-// YouTube Settings Headers
 @interface YTSettingsCell : UITableViewCell
 @end
 
@@ -50,105 +49,149 @@ static NSString *const kVolumeBoostYTEnabledKey = @"VolumeBoostYTEnabled";
 static NSString *const kRememberVolumeEnabledKey = @"RememberVolumeEnabled";
 static NSString *const kCustomYouTubeVolumeScalarKey =
     @"CustomYouTubeVolumeScalar";
+
+static BOOL cachedVolumeBoostEnabled = YES;
+static BOOL cachedRememberVolumeEnabled = YES;
 static float currentVolumeMultiplier = 1.0f;
-static BOOL currentVolumeMultiplierInitialized = NO;
-
-static BOOL IsVolumeBoostYTEnabled() {
-  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-  if ([defaults objectForKey:kVolumeBoostYTEnabledKey] == nil) {
-    return YES; // Default to enabled
-  }
-  return [defaults boolForKey:kVolumeBoostYTEnabledKey];
-}
-
-static BOOL IsRememberVolumeEnabled() {
-  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-  if ([defaults objectForKey:kRememberVolumeEnabledKey] == nil) {
-    return YES;
-  }
-  return [defaults boolForKey:kRememberVolumeEnabledKey];
-}
+static float cachedAudioMultiplier = 1.0f;
+static BOOL preferencesLoaded = NO;
 
 static NSHashTable *activeRenderers = nil;
+static dispatch_once_t activeRenderersOnce;
+static char kRendererRegisteredKey;
 
-static void RegisterRenderer(id renderer) {
-  if (!activeRenderers) {
+static inline float ClampVolumeMultiplier(float multiplier) {
+  if (multiplier < 0.0f)
+    return 0.0f;
+  if (multiplier > 20.0f)
+    return 20.0f;
+  return multiplier;
+}
+
+static inline float CalculateAudioMultiplier(float multiplier) {
+  if (multiplier <= 1.0f)
+    return multiplier;
+  return powf(200.0f, (multiplier - 1.0f) / 19.0f);
+}
+
+static void LoadPreferencesIfNeeded(void) {
+  if (preferencesLoaded)
+    return;
+
+  preferencesLoaded = YES;
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+
+  if ([defaults objectForKey:kVolumeBoostYTEnabledKey] != nil) {
+    cachedVolumeBoostEnabled =
+        [defaults boolForKey:kVolumeBoostYTEnabledKey];
+  }
+
+  if ([defaults objectForKey:kRememberVolumeEnabledKey] != nil) {
+    cachedRememberVolumeEnabled =
+        [defaults boolForKey:kRememberVolumeEnabledKey];
+  }
+
+  if (cachedRememberVolumeEnabled &&
+      [defaults objectForKey:kCustomYouTubeVolumeScalarKey] != nil) {
+    currentVolumeMultiplier = ClampVolumeMultiplier(
+        [defaults floatForKey:kCustomYouTubeVolumeScalarKey]);
+  }
+
+  cachedAudioMultiplier = CalculateAudioMultiplier(currentVolumeMultiplier);
+}
+
+static inline BOOL IsVolumeBoostYTEnabled(void) {
+  return cachedVolumeBoostEnabled;
+}
+
+static inline BOOL IsRememberVolumeEnabled(void) {
+  return cachedRememberVolumeEnabled;
+}
+
+static inline NSHashTable *RendererTable(void) {
+  dispatch_once(&activeRenderersOnce, ^{
     activeRenderers = [NSHashTable weakObjectsHashTable];
-  }
-  if (renderer) {
-    [activeRenderers addObject:renderer];
+  });
+  return activeRenderers;
+}
+
+void VBRegisterRenderer(id renderer) {
+  if (!renderer)
+    return;
+
+  if (objc_getAssociatedObject(renderer, &kRendererRegisteredKey))
+    return;
+
+  objc_setAssociatedObject(renderer, &kRendererRegisteredKey, @YES,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+  NSHashTable *table = RendererTable();
+  @synchronized(table) {
+    [table addObject:renderer];
   }
 }
 
-// Helper to get current volume multiplier
-static float GetCustomVolumeMultiplier() {
-  if (!currentVolumeMultiplierInitialized) {
-    currentVolumeMultiplierInitialized = YES;
-    if (IsRememberVolumeEnabled()) {
-      NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-      if ([defaults objectForKey:kCustomYouTubeVolumeScalarKey] != nil) {
-        currentVolumeMultiplier =
-            [defaults floatForKey:kCustomYouTubeVolumeScalarKey];
-      }
-    }
-  }
-  return currentVolumeMultiplier;
+void VBApplyBaseVolume(id renderer) {
+  if (!renderer || ![renderer respondsToSelector:@selector(setVolume:)])
+    return;
+
+  VBRegisterRenderer(renderer);
+  [renderer setVolume:1.0f];
 }
 
-static float GetLogarithmicAudioMultiplier() {
-  float m = GetCustomVolumeMultiplier();
-  if (m <= 1.0f) {
-    return m;
-  }
-  // m goes from 1.0 to 20.0 in the UI (2000%).
-  // We map this linearly to an exponent to achieve 200.0x physical amplitude
-  // max. powf(200.0f, (m - 1.0f) / 19.0f) ensures m=20 gives 200^1 = 200x.
-  return powf(200.0f, (m - 1.0f) / 19.0f);
-}
+void VBReapplyTrackedRenderers(void) {
+  NSHashTable *table = RendererTable();
+  NSArray *snapshot = nil;
 
-static void NotifyVolumeChange() {
-  for (id renderer in [activeRenderers allObjects]) {
+  @synchronized(table) {
+    snapshot = [table allObjects];
+  }
+
+  for (id renderer in snapshot) {
     if ([renderer respondsToSelector:@selector(setVolume:)]) {
-      // Re-apply base volume 1.0, which then gets intercepted by our hook to
-      // apply the multiplier
       [renderer setVolume:1.0f];
     }
   }
 }
 
-static void SetCustomVolumeMultiplier(float multiplier) {
-  if (multiplier < 0.0f)
-    multiplier = 0.0f;
-  if (multiplier > 20.0f)
-    multiplier = 20.0f;
-
-  currentVolumeMultiplier = multiplier;
-  currentVolumeMultiplierInitialized = YES;
-
-  if (IsRememberVolumeEnabled()) {
-    [[NSUserDefaults standardUserDefaults]
-        setFloat:multiplier
-          forKey:kCustomYouTubeVolumeScalarKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-  }
-
-  NotifyVolumeChange();
+static inline float GetCustomVolumeMultiplier(void) {
+  return currentVolumeMultiplier;
 }
 
-// -----------------------------------------------------
-// High level AVFoundation / MediaPlayer Hooks
-// -----------------------------------------------------
+static inline float GetLogarithmicAudioMultiplier(void) {
+  return cachedAudioMultiplier;
+}
+
+static void PersistCurrentVolumeIfNeeded(void) {
+  if (!cachedRememberVolumeEnabled)
+    return;
+
+  [[NSUserDefaults standardUserDefaults]
+      setFloat:currentVolumeMultiplier
+        forKey:kCustomYouTubeVolumeScalarKey];
+}
+
+static void SetCustomVolumeMultiplier(float multiplier) {
+  multiplier = ClampVolumeMultiplier(multiplier);
+
+  if (fabsf(multiplier - currentVolumeMultiplier) < 0.0001f)
+    return;
+
+  currentVolumeMultiplier = multiplier;
+  cachedAudioMultiplier = CalculateAudioMultiplier(multiplier);
+  VBReapplyTrackedRenderers();
+}
 
 %hook AVPlayer
 - (instancetype)init {
   id orig = %orig;
-  RegisterRenderer(orig);
+  VBRegisterRenderer(orig);
   return orig;
 }
 - (void)setVolume:(float)volume {
-  RegisterRenderer(self);
+  VBRegisterRenderer(self);
   if (IsVolumeBoostYTEnabled()) {
-    volume = volume * GetLogarithmicAudioMultiplier();
+    volume *= GetLogarithmicAudioMultiplier();
   }
   %orig(volume);
 }
@@ -157,13 +200,13 @@ static void SetCustomVolumeMultiplier(float multiplier) {
 %hook AVAudioPlayerNode
 - (instancetype)init {
   id orig = %orig;
-  RegisterRenderer(orig);
+  VBRegisterRenderer(orig);
   return orig;
 }
 - (void)setVolume:(float)volume {
-  RegisterRenderer(self);
+  VBRegisterRenderer(self);
   if (IsVolumeBoostYTEnabled()) {
-    volume = volume * GetLogarithmicAudioMultiplier();
+    volume *= GetLogarithmicAudioMultiplier();
   }
   %orig(volume);
 }
@@ -172,18 +215,18 @@ static void SetCustomVolumeMultiplier(float multiplier) {
 %hook AVAudioPlayer
 - (instancetype)initWithContentsOfURL:(NSURL *)url error:(NSError **)outError {
   id orig = %orig;
-  RegisterRenderer(orig);
+  VBRegisterRenderer(orig);
   return orig;
 }
 - (instancetype)initWithData:(NSData *)data error:(NSError **)outError {
   id orig = %orig;
-  RegisterRenderer(orig);
+  VBRegisterRenderer(orig);
   return orig;
 }
 - (void)setVolume:(float)volume {
-  RegisterRenderer(self);
+  VBRegisterRenderer(self);
   if (IsVolumeBoostYTEnabled()) {
-    volume = volume * GetLogarithmicAudioMultiplier();
+    volume *= GetLogarithmicAudioMultiplier();
   }
   %orig(volume);
 }
@@ -192,21 +235,17 @@ static void SetCustomVolumeMultiplier(float multiplier) {
 %hook AVSampleBufferAudioRenderer
 - (instancetype)init {
   id orig = %orig;
-  RegisterRenderer(orig);
+  VBRegisterRenderer(orig);
   return orig;
 }
 - (void)setVolume:(float)volume {
-  RegisterRenderer(self);
+  VBRegisterRenderer(self);
   if (IsVolumeBoostYTEnabled()) {
-    volume = volume * GetLogarithmicAudioMultiplier();
+    volume *= GetLogarithmicAudioMultiplier();
   }
   %orig(volume);
 }
 %end
-
-// -----------------------------------------------------
-// UI Hooks for Configuration (Native Touch Tracking via sendEvent:)
-// -----------------------------------------------------
 
 static float gestureStartMultiplier = 1.0f;
 static BOOL possibleVolumeGesture = NO;
@@ -215,13 +254,11 @@ static CGPoint initialTouchPoint;
 
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
-  // Escape early if tweak is globally disabled in YouTube settings
   if (!IsVolumeBoostYTEnabled()) {
     %orig(event);
     return;
   }
 
-  // Only track touches from the main screen
   if (self.screen != [UIScreen mainScreen]) {
     %orig(event);
     return;
@@ -238,56 +275,43 @@ static CGPoint initialTouchPoint;
 
   switch (touch.phase) {
   case UITouchPhaseBegan: {
-    // Check if the touch is within 25 points of the right edge
     CGFloat screenWidth = self.bounds.size.width;
     if (location.x >= screenWidth - 25.0f) {
       possibleVolumeGesture = YES;
       isTrackingVolumeGesture = NO;
       initialTouchPoint = location;
-      return; // Swallow the touch, start evaluating gesture
+      return;
     }
     break;
   }
   case UITouchPhaseMoved: {
     if (possibleVolumeGesture) {
-      CGFloat dx = initialTouchPoint.x - location.x; // Positive if moving left
+      CGFloat dx = initialTouchPoint.x - location.x;
       CGFloat dy = fabs(location.y - initialTouchPoint.y);
 
-      // Require moving left (inwards) by at least 15 points before locking in
       if (dx > 15.0f && dx > dy) {
         isTrackingVolumeGesture = YES;
         possibleVolumeGesture = NO;
-
-        // Lock in! Now calculate relative vertical drag from this exact point
         initialTouchPoint = location;
         gestureStartMultiplier = GetCustomVolumeMultiplier();
         [[YTVolumeHUD sharedHUD] showWithValue:gestureStartMultiplier];
-        return; // Swallow
+        return;
       } else if (dy > 20.0f || dx < -10.0f) {
-        // Failed gesture (moved up/down too early, or moved further right off
-        // screen)
         possibleVolumeGesture = NO;
       } else {
-        return; // Still evaluating, swallow touch
+        return;
       }
     }
 
     if (isTrackingVolumeGesture) {
       CGFloat translationY = location.y - initialTouchPoint.y;
-
-      // Sweeping vertically up (negative Y) increases volume
-      // A full 570-point swipe upward reaches the 20x multiplier
       float deltaMultiplier = -translationY / 30.0f;
-      float newMultiplier = gestureStartMultiplier + deltaMultiplier;
-
-      if (newMultiplier < 0.0f)
-        newMultiplier = 0.0f;
-      if (newMultiplier > 20.0f)
-        newMultiplier = 20.0f;
+      float newMultiplier =
+          ClampVolumeMultiplier(gestureStartMultiplier + deltaMultiplier);
 
       SetCustomVolumeMultiplier(newMultiplier);
       [[YTVolumeHUD sharedHUD] showWithValue:newMultiplier];
-      return; // Swallow the touch
+      return;
     }
     break;
   }
@@ -295,14 +319,15 @@ static CGPoint initialTouchPoint;
   case UITouchPhaseCancelled: {
     if (possibleVolumeGesture) {
       possibleVolumeGesture = NO;
-      return; // Swallowed aborted tap
+      return;
     }
     if (isTrackingVolumeGesture) {
       isTrackingVolumeGesture = NO;
+      PersistCurrentVolumeIfNeeded();
       [[YTVolumeHUD sharedHUD] performSelector:@selector(hide)
                                     withObject:nil
                                     afterDelay:1.0];
-      return; // Swallow the touch
+      return;
     }
     break;
   }
@@ -310,25 +335,18 @@ static CGPoint initialTouchPoint;
     break;
   }
 
-  // Pass the event to the app if we are not tracking our custom gesture
   %orig(event);
 }
 %end
-
-// -----------------------------------------------------
-// YouTube In-App Settings Integration
-// -----------------------------------------------------
 
 %group YouTubeSettings
 
 %hook YTSettingsGroupData
 
 - (NSArray<NSNumber *> *)orderedCategories {
-  // Only inject into the main settings group (type 1)
   if (self.type != 1)
     return %orig;
 
-  // If another tweak (YouGroupSettings) handles grouping, let it do so
   if (class_getClassMethod(objc_getClass("YTSettingsGroupData"),
                            @selector(tweaks))) {
     return %orig;
@@ -337,7 +355,6 @@ static CGPoint initialTouchPoint;
   NSArray<NSNumber *> *categories = %orig;
   NSMutableArray<NSNumber *> *mutableCategories = [categories mutableCopy];
   if (mutableCategories) {
-    // Insert our tweak section near the top
     [mutableCategories insertObject:@(TweakSection) atIndex:0];
   }
   return mutableCategories.copy ?: categories;
@@ -378,7 +395,6 @@ static CGPoint initialTouchPoint;
       [NSMutableArray array];
   Class YTSettingsSectionItemClass = %c(YTSettingsSectionItem);
 
-  // Fallback if class not available (though it should be)
   if (!YTSettingsSectionItemClass)
     return;
 
@@ -391,17 +407,11 @@ static CGPoint initialTouchPoint;
       accessibilityIdentifier:nil
                      switchOn:IsVolumeBoostYTEnabled()
                   switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
+                    cachedVolumeBoostEnabled = enabled;
                     [[NSUserDefaults standardUserDefaults]
                         setBool:enabled
                          forKey:kVolumeBoostYTEnabledKey];
-                    [[NSUserDefaults standardUserDefaults] synchronize];
-
-                    // Re-fire volume to normalize or amplify existing active
-                    // players immediately
-                    if (!enabled) {
-                      SetCustomVolumeMultiplier(1.0f);
-                    }
-                    NotifyVolumeChange();
+                    VBReapplyTrackedRenderers();
                     return YES;
                   }
                 settingItemId:0];
@@ -415,16 +425,15 @@ static CGPoint initialTouchPoint;
                   switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
                     NSUserDefaults *defaults =
                         [NSUserDefaults standardUserDefaults];
-                    float currentMultiplier = GetCustomVolumeMultiplier();
+                    cachedRememberVolumeEnabled = enabled;
                     [defaults setBool:enabled
                                forKey:kRememberVolumeEnabledKey];
                     if (enabled) {
-                      [defaults setFloat:currentMultiplier
+                      [defaults setFloat:GetCustomVolumeMultiplier()
                                   forKey:kCustomYouTubeVolumeScalarKey];
                     } else {
                       [defaults removeObjectForKey:kCustomYouTubeVolumeScalarKey];
                     }
-                    [defaults synchronize];
                     return YES;
                   }
                 settingItemId:1];
@@ -462,21 +471,19 @@ static CGPoint initialTouchPoint;
 
 %end
 
-%end // end group YouTubeSettings
+%end
 
 %ctor {
-  // Never inject into SpringBoard (Home Screen)
   NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
   if ([bundleID isEqualToString:@"com.apple.springboard"]) {
     return;
   }
 
-  // Check if YouTube classes exist instead of relying on Bundle ID,
-  // because sideloaded apps (like LiveContainer) often change their Bundle IDs.
+  LoadPreferencesIfNeeded();
+
   if (NSClassFromString(@"YTSettingsGroupData")) {
     %init(YouTubeSettings);
   }
 
-  // Always initialize the core AVPlayer and UIWindow touch hooks for every app
   %init;
 }

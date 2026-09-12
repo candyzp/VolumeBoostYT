@@ -1,98 +1,138 @@
 #import <AVFoundation/AVFoundation.h>
 
-static NSHashTable *playbackRenderers = nil;
-static NSUInteger reapplyGeneration = 0;
+extern void VBRegisterRenderer(id renderer);
+extern void VBApplyBaseVolume(id renderer);
+extern void VBReapplyTrackedRenderers(void);
 
-static inline void RegisterPlaybackRenderer(id renderer) {
-  if (!playbackRenderers) {
-    playbackRenderers = [NSHashTable weakObjectsHashTable];
-  }
-  if (renderer) {
-    [playbackRenderers addObject:renderer];
+static BOOL repairBurstActive = NO;
+static BOOL repairBurstNeedsTail = NO;
+
+static void StartRepairBurstOnMain(void);
+
+static inline void ScheduleTrackedReapply(NSTimeInterval delay) {
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+      dispatch_get_main_queue(), ^{
+        VBReapplyTrackedRenderers();
+      });
+}
+
+static void FinishRepairBurstOnMain(void) {
+  VBReapplyTrackedRenderers();
+
+  BOOL needsTail = repairBurstNeedsTail;
+  repairBurstActive = NO;
+  repairBurstNeedsTail = NO;
+
+  if (needsTail) {
+    StartRepairBurstOnMain();
   }
 }
 
-static inline void ApplyBaseVolume(id renderer) {
-  if (renderer && [renderer respondsToSelector:@selector(setVolume:)]) {
-    [renderer setVolume:1.0f];
+static void StartRepairBurstOnMain(void) {
+  if (repairBurstActive) {
+    repairBurstNeedsTail = YES;
+    return;
   }
+
+  repairBurstActive = YES;
+  repairBurstNeedsTail = NO;
+
+  ScheduleTrackedReapply(0.06);
+  ScheduleTrackedReapply(0.22);
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.60 * NSEC_PER_SEC)),
+      dispatch_get_main_queue(), ^{
+        FinishRepairBurstOnMain();
+      });
 }
 
-static void ReapplyTrackedRenderers(void) {
-  for (id renderer in [playbackRenderers allObjects]) {
-    ApplyBaseVolume(renderer);
-  }
-}
-
-static void QueueReapply(void) {
-  NSUInteger generation = ++reapplyGeneration;
-
-  dispatch_async(dispatch_get_main_queue(), ^{
-    if (generation == reapplyGeneration) {
-      ReapplyTrackedRenderers();
-    }
-  });
-
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
-                 dispatch_get_main_queue(), ^{
-                   if (generation == reapplyGeneration) {
-                     ReapplyTrackedRenderers();
-                   }
-                 });
-
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
-                 dispatch_get_main_queue(), ^{
-                   if (generation == reapplyGeneration) {
-                     ReapplyTrackedRenderers();
-                   }
-                 });
-}
-
-static inline void TrackRenderer(id renderer) {
-  RegisterPlaybackRenderer(renderer);
+static void RequestRepair(id renderer) {
   __weak id weakRenderer = renderer;
-  dispatch_async(dispatch_get_main_queue(), ^{
+
+  void (^work)(void) = ^{
     id strongRenderer = weakRenderer;
     if (strongRenderer) {
-      ApplyBaseVolume(strongRenderer);
+      VBApplyBaseVolume(strongRenderer);
     }
-  });
+    StartRepairBurstOnMain();
+  };
+
+  if ([NSThread isMainThread]) {
+    work();
+  } else {
+    dispatch_async(dispatch_get_main_queue(), work);
+  }
 }
 
-static inline void ReapplyVolumeBoost(AVPlayer *player) {
-  RegisterPlaybackRenderer(player);
-  ReapplyTrackedRenderers();
-  QueueReapply();
+static inline id TrackRenderer(id renderer) {
+  if (renderer) {
+    VBRegisterRenderer(renderer);
+    RequestRepair(renderer);
+  }
+  return renderer;
 }
 
 %hook AVPlayer
 
 - (instancetype)init {
   id orig = %orig;
-  TrackRenderer(orig);
-  return orig;
+  return TrackRenderer(orig);
+}
+
+- (instancetype)initWithPlayerItem:(AVPlayerItem *)item {
+  id orig = %orig(item);
+  return TrackRenderer(orig);
+}
+
+- (instancetype)initWithURL:(NSURL *)URL {
+  id orig = %orig(URL);
+  return TrackRenderer(orig);
 }
 
 - (void)play {
   %orig;
-  ReapplyVolumeBoost(self);
+  RequestRepair(self);
 }
 
 - (void)setRate:(float)rate {
   %orig(rate);
   if (rate > 0.0f) {
-    ReapplyVolumeBoost(self);
+    RequestRepair(self);
   }
 }
 
 - (void)playImmediatelyAtRate:(float)rate {
   %orig(rate);
-  ReapplyVolumeBoost(self);
+  RequestRepair(self);
 }
 
 - (void)replaceCurrentItemWithPlayerItem:(AVPlayerItem *)item {
   %orig(item);
-  ReapplyVolumeBoost(self);
+  RequestRepair(self);
+}
+
+%end
+
+%hook AVPlayerItem
+
+- (instancetype)initWithURL:(NSURL *)URL {
+  id orig = %orig(URL);
+  RequestRepair(nil);
+  return orig;
+}
+
+- (instancetype)initWithAsset:(AVAsset *)asset {
+  id orig = %orig(asset);
+  RequestRepair(nil);
+  return orig;
+}
+
+- (instancetype)initWithAsset:(AVAsset *)asset
+    automaticallyLoadedAssetKeys:(NSArray<NSString *> *)automaticallyLoadedAssetKeys {
+  id orig = %orig(asset, automaticallyLoadedAssetKeys);
+  RequestRepair(nil);
+  return orig;
 }
 
 %end
@@ -101,8 +141,7 @@ static inline void ReapplyVolumeBoost(AVPlayer *player) {
 
 - (instancetype)init {
   id orig = %orig;
-  TrackRenderer(orig);
-  return orig;
+  return TrackRenderer(orig);
 }
 
 %end
@@ -111,8 +150,7 @@ static inline void ReapplyVolumeBoost(AVPlayer *player) {
 
 - (instancetype)init {
   id orig = %orig;
-  TrackRenderer(orig);
-  return orig;
+  return TrackRenderer(orig);
 }
 
 %end
@@ -120,15 +158,13 @@ static inline void ReapplyVolumeBoost(AVPlayer *player) {
 %hook AVAudioPlayer
 
 - (instancetype)initWithContentsOfURL:(NSURL *)url error:(NSError **)outError {
-  id orig = %orig;
-  TrackRenderer(orig);
-  return orig;
+  id orig = %orig(url, outError);
+  return TrackRenderer(orig);
 }
 
 - (instancetype)initWithData:(NSData *)data error:(NSError **)outError {
-  id orig = %orig;
-  TrackRenderer(orig);
-  return orig;
+  id orig = %orig(data, outError);
+  return TrackRenderer(orig);
 }
 
 %end
