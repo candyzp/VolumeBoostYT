@@ -204,7 +204,7 @@ static BOOL VBControllerTreeWantsIndicatorHidden(UIViewController *controller) {
     }
   }
 
-  for (UIViewController *child in controller.children) {
+  for (UIViewController *child in controller.childViewControllers) {
     if (!child || child == controller)
       continue;
 
