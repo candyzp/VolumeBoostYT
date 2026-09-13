@@ -130,6 +130,101 @@ static inline BOOL IsGestureIndicatorVisible(void) {
   return cachedShowGestureIndicator;
 }
 
+static BOOL VBControllerIsShorts(UIViewController *controller) {
+  if (!controller)
+    return NO;
+
+  NSString *className = NSStringFromClass(controller.class);
+  return [className containsString:@"YTReelWatch"] ||
+         [className containsString:@"YTShortsPlayer"];
+}
+
+static BOOL VBControllerReportsFullscreen(UIViewController *controller) {
+  if (!controller)
+    return NO;
+
+  NSString *className = NSStringFromClass(controller.class);
+  if (![className hasPrefix:@"YT"])
+    return NO;
+
+  BOOL likelyPlayerController =
+      [className containsString:@"Watch"] ||
+      [className containsString:@"Player"] ||
+      [className containsString:@"Overlay"];
+  if (!likelyPlayerController)
+    return NO;
+
+  SEL selector = NSSelectorFromString(@"isFullscreen");
+  if (![controller respondsToSelector:selector])
+    return NO;
+
+  NSMethodSignature *signature =
+      [controller methodSignatureForSelector:selector];
+  if (!signature || signature.methodReturnLength != sizeof(BOOL))
+    return NO;
+
+  IMP implementation = [controller methodForSelector:selector];
+  if (!implementation)
+    return NO;
+
+  BOOL (*isFullscreen)(id, SEL) = (BOOL (*)(id, SEL))implementation;
+  return isFullscreen(controller, selector);
+}
+
+static BOOL VBControllerTreeWantsIndicatorHidden(UIViewController *controller) {
+  if (!controller)
+    return NO;
+
+  if (VBControllerIsShorts(controller) ||
+      VBControllerReportsFullscreen(controller)) {
+    return YES;
+  }
+
+  UIViewController *presented = controller.presentedViewController;
+  if (presented && !presented.isBeingDismissed &&
+      VBControllerTreeWantsIndicatorHidden(presented)) {
+    return YES;
+  }
+
+  if ([controller isKindOfClass:[UINavigationController class]]) {
+    UIViewController *visible =
+        ((UINavigationController *)controller).visibleViewController;
+    if (visible && visible != controller &&
+        VBControllerTreeWantsIndicatorHidden(visible)) {
+      return YES;
+    }
+  }
+
+  if ([controller isKindOfClass:[UITabBarController class]]) {
+    UIViewController *selected =
+        ((UITabBarController *)controller).selectedViewController;
+    if (selected && selected != controller &&
+        VBControllerTreeWantsIndicatorHidden(selected)) {
+      return YES;
+    }
+  }
+
+  for (UIViewController *child in controller.children) {
+    if (!child || child == controller)
+      continue;
+
+    UIView *childView = child.viewIfLoaded;
+    if (childView && childView.window &&
+        VBControllerTreeWantsIndicatorHidden(child)) {
+      return YES;
+    }
+  }
+
+  return NO;
+}
+
+static BOOL VBShouldHideGestureIndicator(UIWindow *window) {
+  if (!window)
+    return NO;
+
+  return VBControllerTreeWantsIndicatorHidden(window.rootViewController);
+}
+
 static CGRect VolumeGestureHitbox(UIWindow *window) {
   CGFloat width = window.bounds.size.width;
   CGFloat height = window.bounds.size.height;
@@ -154,7 +249,8 @@ static void VBUpdateGestureIndicator(UIWindow *window) {
 
   UIView *indicator = objc_getAssociatedObject(window, &kGestureIndicatorKey);
   BOOL shouldShow = IsVolumeBoostYTEnabled() && IsGestureIndicatorVisible() &&
-                    window.windowLevel == UIWindowLevelNormal;
+                    window.windowLevel == UIWindowLevelNormal &&
+                    !VBShouldHideGestureIndicator(window);
 
   if (!indicator && shouldShow) {
     indicator = [[UIView alloc] initWithFrame:CGRectZero];
@@ -181,9 +277,27 @@ static void VBUpdateGestureIndicator(UIWindow *window) {
   }
 }
 
-static void VBRefreshGestureIndicators(void) {
-  for (UIWindow *window in [UIApplication sharedApplication].windows) {
+static void VBScheduleGestureIndicatorUpdate(UIWindow *window) {
+  if (!window)
+    return;
+
+  dispatch_async(dispatch_get_main_queue(), ^{
     VBUpdateGestureIndicator(window);
+  });
+}
+
+static void VBRefreshGestureIndicators(void) {
+  if (@available(iOS 13.0, *)) {
+    UIApplication *application = [UIApplication sharedApplication];
+    for (UIScene *scene in application.connectedScenes) {
+      if (![scene isKindOfClass:[UIWindowScene class]])
+        continue;
+
+      UIWindowScene *windowScene = (UIWindowScene *)scene;
+      for (UIWindow *window in windowScene.windows) {
+        VBUpdateGestureIndicator(window);
+      }
+    }
   }
 }
 
@@ -311,10 +425,9 @@ static CGPoint initialTouchPoint;
 
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
-  VBUpdateGestureIndicator(self);
-
   if (!IsVolumeBoostYTEnabled()) {
     %orig(event);
+    VBUpdateGestureIndicator(self);
     return;
   }
 
@@ -323,9 +436,12 @@ static CGPoint initialTouchPoint;
     return;
   }
 
+  VBUpdateGestureIndicator(self);
+
   NSSet<UITouch *> *touches = [event allTouches];
   if (touches.count == 0) {
     %orig(event);
+    VBScheduleGestureIndicatorUpdate(self);
     return;
   }
 
@@ -400,6 +516,8 @@ static CGPoint initialTouchPoint;
   }
 
   %orig(event);
+  VBUpdateGestureIndicator(self);
+  VBScheduleGestureIndicatorUpdate(self);
 }
 %end
 
