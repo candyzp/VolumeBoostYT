@@ -47,11 +47,13 @@
 static const NSInteger TweakSection = 'ndyt';
 static NSString *const kVolumeBoostYTEnabledKey = @"VolumeBoostYTEnabled";
 static NSString *const kRememberVolumeEnabledKey = @"RememberVolumeEnabled";
+static NSString *const kShowGestureIndicatorKey = @"ShowGestureIndicator";
 static NSString *const kCustomYouTubeVolumeScalarKey =
     @"CustomYouTubeVolumeScalar";
 
 static BOOL cachedVolumeBoostEnabled = YES;
 static BOOL cachedRememberVolumeEnabled = YES;
+static BOOL cachedShowGestureIndicator = YES;
 static BOOL supportsTweaksCategoryAPI = NO;
 static float currentVolumeMultiplier = 1.0f;
 static float cachedAudioMultiplier = 1.0f;
@@ -60,6 +62,12 @@ static BOOL preferencesLoaded = NO;
 static NSHashTable *activeRenderers = nil;
 static dispatch_once_t activeRenderersOnce;
 static char kRendererRegisteredKey;
+static char kGestureIndicatorKey;
+
+static const CGFloat kGestureRightInset = 10.0f;
+static const CGFloat kGestureHitboxWidth = 40.0f;
+static const CGFloat kGestureIndicatorWidth = 4.0f;
+static const CGFloat kGestureIndicatorHeight = 56.0f;
 
 static inline float ClampVolumeMultiplier(float multiplier) {
   if (multiplier < 0.0f)
@@ -92,6 +100,11 @@ static void LoadPreferencesIfNeeded(void) {
         [defaults boolForKey:kRememberVolumeEnabledKey];
   }
 
+  if ([defaults objectForKey:kShowGestureIndicatorKey] != nil) {
+    cachedShowGestureIndicator =
+        [defaults boolForKey:kShowGestureIndicatorKey];
+  }
+
   if (cachedRememberVolumeEnabled &&
       [defaults objectForKey:kCustomYouTubeVolumeScalarKey] != nil) {
     currentVolumeMultiplier = ClampVolumeMultiplier(
@@ -111,6 +124,67 @@ static inline BOOL IsVolumeBoostYTEnabled(void) {
 
 static inline BOOL IsRememberVolumeEnabled(void) {
   return cachedRememberVolumeEnabled;
+}
+
+static inline BOOL IsGestureIndicatorVisible(void) {
+  return cachedShowGestureIndicator;
+}
+
+static CGRect VolumeGestureHitbox(UIWindow *window) {
+  CGFloat width = window.bounds.size.width;
+  CGFloat height = window.bounds.size.height;
+  CGFloat hitboxHeight = MIN(240.0f, MAX(120.0f, height * 0.30f));
+  CGFloat x = MAX(0.0f, width - kGestureRightInset - kGestureHitboxWidth);
+  CGFloat y = MAX(0.0f, (height - hitboxHeight) * 0.5f);
+  return CGRectMake(x, y, kGestureHitboxWidth, hitboxHeight);
+}
+
+static CGRect VolumeGestureIndicatorFrame(UIWindow *window) {
+  CGFloat width = window.bounds.size.width;
+  CGFloat height = window.bounds.size.height;
+  CGFloat x = MAX(0.0f,
+                  width - kGestureRightInset - kGestureIndicatorWidth);
+  CGFloat y = MAX(0.0f, (height - kGestureIndicatorHeight) * 0.5f);
+  return CGRectMake(x, y, kGestureIndicatorWidth, kGestureIndicatorHeight);
+}
+
+static void VBUpdateGestureIndicator(UIWindow *window) {
+  if (!window || window.screen != [UIScreen mainScreen])
+    return;
+
+  UIView *indicator = objc_getAssociatedObject(window, &kGestureIndicatorKey);
+  BOOL shouldShow = IsVolumeBoostYTEnabled() && IsGestureIndicatorVisible() &&
+                    window.windowLevel == UIWindowLevelNormal;
+
+  if (!indicator && shouldShow) {
+    indicator = [[UIView alloc] initWithFrame:CGRectZero];
+    indicator.userInteractionEnabled = NO;
+    indicator.accessibilityElementsHidden = YES;
+    if ([UIColor respondsToSelector:@selector(secondaryLabelColor)]) {
+      indicator.backgroundColor = [UIColor secondaryLabelColor];
+    } else {
+      indicator.backgroundColor = [UIColor colorWithWhite:0.72f alpha:1.0f];
+    }
+    indicator.alpha = 0.72f;
+    indicator.layer.cornerRadius = kGestureIndicatorWidth * 0.5f;
+    objc_setAssociatedObject(window, &kGestureIndicatorKey, indicator,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [window addSubview:indicator];
+  }
+
+  if (!indicator)
+    return;
+
+  indicator.hidden = !shouldShow;
+  if (shouldShow) {
+    indicator.frame = VolumeGestureIndicatorFrame(window);
+  }
+}
+
+static void VBRefreshGestureIndicators(void) {
+  for (UIWindow *window in [UIApplication sharedApplication].windows) {
+    VBUpdateGestureIndicator(window);
+  }
 }
 
 static inline NSHashTable *RendererTable(void) {
@@ -237,6 +311,8 @@ static CGPoint initialTouchPoint;
 
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
+  VBUpdateGestureIndicator(self);
+
   if (!IsVolumeBoostYTEnabled()) {
     %orig(event);
     return;
@@ -258,8 +334,7 @@ static CGPoint initialTouchPoint;
 
   switch (touch.phase) {
   case UITouchPhaseBegan: {
-    CGFloat screenWidth = self.bounds.size.width;
-    if (location.x >= screenWidth - 25.0f) {
+    if (CGRectContainsPoint(VolumeGestureHitbox(self), location)) {
       possibleVolumeGesture = YES;
       isTrackingVolumeGesture = NO;
       initialTouchPoint = location;
@@ -406,7 +481,7 @@ static CGPoint initialTouchPoint;
 
   YTSettingsSectionItem *enableTweak = [YTSettingsSectionItemClass
           switchItemWithTitle:@"Enable VolumeBoostYT"
-             titleDescription:@"Allow custom right-edge pan volume gesture"
+             titleDescription:@"Allow custom middle-right pan volume gesture"
       accessibilityIdentifier:nil
                      switchOn:IsVolumeBoostYTEnabled()
                   switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
@@ -415,6 +490,7 @@ static CGPoint initialTouchPoint;
                         setBool:enabled
                          forKey:kVolumeBoostYTEnabledKey];
                     VBReapplyTrackedRenderers();
+                    VBRefreshGestureIndicators();
                     return YES;
                   }
                 settingItemId:0];
@@ -441,6 +517,22 @@ static CGPoint initialTouchPoint;
                   }
                 settingItemId:1];
   [sectionItems addObject:rememberVolume];
+
+  YTSettingsSectionItem *showGestureIndicator = [YTSettingsSectionItemClass
+          switchItemWithTitle:@"Show Gesture Pill"
+             titleDescription:nil
+      accessibilityIdentifier:nil
+                     switchOn:IsGestureIndicatorVisible()
+                  switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
+                    cachedShowGestureIndicator = enabled;
+                    [[NSUserDefaults standardUserDefaults]
+                        setBool:enabled
+                         forKey:kShowGestureIndicatorKey];
+                    VBRefreshGestureIndicators();
+                    return YES;
+                  }
+                settingItemId:2];
+  [sectionItems addObject:showGestureIndicator];
 
   if ([settingsViewController
           respondsToSelector:@selector
