@@ -66,10 +66,16 @@ static char kGestureIndicatorKey;
 static char kVolumePanRecognizerKey;
 static char kVolumePanHandlerKey;
 
-static const CGFloat kGestureRightInset = 32.0f;
-static const CGFloat kGestureHitboxWidth = 40.0f;
-static const CGFloat kGestureIndicatorWidth = 4.0f;
-static const CGFloat kGestureIndicatorHeight = 56.0f;
+static const CGFloat kGestureRightInset = 44.0f;
+static const CGFloat kGestureHitboxWidth = 84.0f;
+static const CGFloat kGestureIndicatorWidth = 5.0f;
+static const CGFloat kGestureIndicatorHeight = 62.0f;
+
+typedef NS_ENUM(NSInteger, VBWindowMode) {
+  VBWindowModeNormal = 0,
+  VBWindowModeShorts = 1,
+  VBWindowModeFullscreen = 2,
+};
 
 static inline float ClampVolumeMultiplier(float multiplier) {
   if (multiplier < 0.0f)
@@ -173,18 +179,16 @@ static BOOL VBControllerReportsFullscreen(UIViewController *controller) {
   return isFullscreen(controller, selector);
 }
 
-static BOOL VBControllerTreeWantsIndicatorHidden(UIViewController *controller) {
+static BOOL VBControllerTreeContainsShorts(UIViewController *controller) {
   if (!controller)
     return NO;
 
-  if (VBControllerIsShorts(controller) ||
-      VBControllerReportsFullscreen(controller)) {
+  if (VBControllerIsShorts(controller))
     return YES;
-  }
 
   UIViewController *presented = controller.presentedViewController;
   if (presented && !presented.isBeingDismissed &&
-      VBControllerTreeWantsIndicatorHidden(presented)) {
+      VBControllerTreeContainsShorts(presented)) {
     return YES;
   }
 
@@ -192,7 +196,7 @@ static BOOL VBControllerTreeWantsIndicatorHidden(UIViewController *controller) {
     UIViewController *visible =
         ((UINavigationController *)controller).visibleViewController;
     if (visible && visible != controller &&
-        VBControllerTreeWantsIndicatorHidden(visible)) {
+        VBControllerTreeContainsShorts(visible)) {
       return YES;
     }
   }
@@ -201,7 +205,7 @@ static BOOL VBControllerTreeWantsIndicatorHidden(UIViewController *controller) {
     UIViewController *selected =
         ((UITabBarController *)controller).selectedViewController;
     if (selected && selected != controller &&
-        VBControllerTreeWantsIndicatorHidden(selected)) {
+        VBControllerTreeContainsShorts(selected)) {
       return YES;
     }
   }
@@ -212,7 +216,7 @@ static BOOL VBControllerTreeWantsIndicatorHidden(UIViewController *controller) {
 
     UIView *childView = child.viewIfLoaded;
     if (childView && childView.window &&
-        VBControllerTreeWantsIndicatorHidden(child)) {
+        VBControllerTreeContainsShorts(child)) {
       return YES;
     }
   }
@@ -220,29 +224,184 @@ static BOOL VBControllerTreeWantsIndicatorHidden(UIViewController *controller) {
   return NO;
 }
 
-static BOOL VBShouldHideGestureIndicator(UIWindow *window) {
-  if (!window)
+static BOOL VBControllerTreeReportsFullscreen(UIViewController *controller) {
+  if (!controller)
     return NO;
 
-  return VBControllerTreeWantsIndicatorHidden(window.rootViewController);
+  if (VBControllerReportsFullscreen(controller))
+    return YES;
+
+  UIViewController *presented = controller.presentedViewController;
+  if (presented && !presented.isBeingDismissed &&
+      VBControllerTreeReportsFullscreen(presented)) {
+    return YES;
+  }
+
+  if ([controller isKindOfClass:[UINavigationController class]]) {
+    UIViewController *visible =
+        ((UINavigationController *)controller).visibleViewController;
+    if (visible && visible != controller &&
+        VBControllerTreeReportsFullscreen(visible)) {
+      return YES;
+    }
+  }
+
+  if ([controller isKindOfClass:[UITabBarController class]]) {
+    UIViewController *selected =
+        ((UITabBarController *)controller).selectedViewController;
+    if (selected && selected != controller &&
+        VBControllerTreeReportsFullscreen(selected)) {
+      return YES;
+    }
+  }
+
+  for (UIViewController *child in controller.childViewControllers) {
+    if (!child || child == controller)
+      continue;
+
+    UIView *childView = child.viewIfLoaded;
+    if (childView && childView.window &&
+        VBControllerTreeReportsFullscreen(child)) {
+      return YES;
+    }
+  }
+
+  return NO;
+}
+
+static BOOL VBWindowIsShorts(UIWindow *window) {
+  if (!window)
+    return NO;
+  return VBControllerTreeContainsShorts(window.rootViewController);
+}
+
+static BOOL VBWindowIsFullscreen(UIWindow *window) {
+  if (!window || VBWindowIsShorts(window))
+    return NO;
+
+  if (VBControllerTreeReportsFullscreen(window.rootViewController))
+    return YES;
+
+  return window.bounds.size.width > window.bounds.size.height;
+}
+
+static VBWindowMode VBWindowModeForWindow(UIWindow *window) {
+  if (VBWindowIsShorts(window))
+    return VBWindowModeShorts;
+  if (VBWindowIsFullscreen(window))
+    return VBWindowModeFullscreen;
+  return VBWindowModeNormal;
+}
+
+static BOOL VBControlsOverlayVisibleInViewTree(UIView *view,
+                                               UIWindow *window,
+                                               BOOL *foundOverlay) {
+  if (!view)
+    return NO;
+
+  NSString *className = NSStringFromClass(view.class);
+  if ([className containsString:@"YTMainAppControlsOverlayView"]) {
+    if (foundOverlay)
+      *foundOverlay = YES;
+
+    BOOL visible = !view.hidden && view.alpha > 0.02f && view.window == window;
+    @try {
+      id overlayState = [view valueForKey:@"_isOverlayVisible"];
+      if ([overlayState respondsToSelector:@selector(boolValue)]) {
+        visible = visible && [overlayState boolValue];
+      }
+    } @catch (__unused NSException *exception) {
+    }
+    return visible;
+  }
+
+  for (UIView *subview in view.subviews) {
+    BOOL childFound = NO;
+    BOOL childVisible =
+        VBControlsOverlayVisibleInViewTree(subview, window, &childFound);
+    if (childFound) {
+      if (foundOverlay)
+        *foundOverlay = YES;
+      if (childVisible)
+        return YES;
+    }
+  }
+
+  return NO;
+}
+
+static BOOL VBFullscreenControlsVisible(UIWindow *window) {
+  if (!window)
+    return YES;
+
+  BOOL foundOverlay = NO;
+  BOOL visible =
+      VBControlsOverlayVisibleInViewTree(window, window, &foundOverlay);
+  return foundOverlay ? visible : YES;
+}
+
+static CGFloat VBGestureCenterY(UIWindow *window, VBWindowMode mode) {
+  CGFloat height = window.bounds.size.height;
+  CGFloat safeTop = window.safeAreaInsets.top;
+  CGFloat safeBottom = window.safeAreaInsets.bottom;
+
+  if (mode == VBWindowModeShorts) {
+    CGFloat centerY = MAX(safeTop + 150.0f, height * 0.30f);
+    return MIN(centerY, height * 0.40f);
+  }
+
+  if (mode == VBWindowModeFullscreen) {
+    CGFloat centerY = MAX(safeTop + 100.0f, height * 0.36f);
+    return MIN(centerY, height - safeBottom - 100.0f);
+  }
+
+  return height * 0.50f;
+}
+
+static CGFloat VBGestureHitboxHeight(UIWindow *window, VBWindowMode mode) {
+  CGFloat height = window.bounds.size.height;
+
+  if (mode == VBWindowModeShorts)
+    return MIN(300.0f, MAX(220.0f, height * 0.30f));
+
+  if (mode == VBWindowModeFullscreen)
+    return MIN(220.0f, MAX(160.0f, height * 0.48f));
+
+  return MIN(300.0f, MAX(200.0f, height * 0.28f));
 }
 
 static CGRect VolumeGestureHitbox(UIWindow *window) {
+  if (!window)
+    return CGRectZero;
+
+  VBWindowMode mode = VBWindowModeForWindow(window);
   CGFloat width = window.bounds.size.width;
-  CGFloat height = window.bounds.size.height;
-  CGFloat hitboxHeight = MIN(240.0f, MAX(120.0f, height * 0.30f));
+  CGFloat hitboxHeight = VBGestureHitboxHeight(window, mode);
+  CGFloat centerY = VBGestureCenterY(window, mode);
   CGFloat x = MAX(0.0f, width - kGestureRightInset - kGestureHitboxWidth);
-  CGFloat y = MAX(0.0f, (height - hitboxHeight) * 0.5f);
+  CGFloat y = MAX(0.0f, centerY - hitboxHeight * 0.5f);
+  CGFloat maxY = window.bounds.size.height - hitboxHeight;
+  y = MIN(y, MAX(0.0f, maxY));
   return CGRectMake(x, y, kGestureHitboxWidth, hitboxHeight);
 }
 
 static CGRect VolumeGestureIndicatorFrame(UIWindow *window) {
-  CGFloat width = window.bounds.size.width;
-  CGFloat height = window.bounds.size.height;
-  CGFloat x = MAX(0.0f,
-                  width - kGestureRightInset - kGestureIndicatorWidth);
-  CGFloat y = MAX(0.0f, (height - kGestureIndicatorHeight) * 0.5f);
+  CGRect hitbox = VolumeGestureHitbox(window);
+  CGFloat x = CGRectGetMidX(hitbox) - kGestureIndicatorWidth * 0.5f;
+  CGFloat y = CGRectGetMidY(hitbox) - kGestureIndicatorHeight * 0.5f;
   return CGRectMake(x, y, kGestureIndicatorWidth, kGestureIndicatorHeight);
+}
+
+static BOOL VBShouldShowGestureIndicator(UIWindow *window) {
+  if (!window || !IsVolumeBoostYTEnabled() || !IsGestureIndicatorVisible() ||
+      window.windowLevel != UIWindowLevelNormal) {
+    return NO;
+  }
+
+  if (VBWindowModeForWindow(window) == VBWindowModeFullscreen)
+    return VBFullscreenControlsVisible(window);
+
+  return YES;
 }
 
 static void VBUpdateGestureIndicator(UIWindow *window) {
@@ -250,9 +409,7 @@ static void VBUpdateGestureIndicator(UIWindow *window) {
     return;
 
   UIView *indicator = objc_getAssociatedObject(window, &kGestureIndicatorKey);
-  BOOL shouldShow = IsVolumeBoostYTEnabled() && IsGestureIndicatorVisible() &&
-                    window.windowLevel == UIWindowLevelNormal &&
-                    !VBShouldHideGestureIndicator(window);
+  BOOL shouldShow = VBShouldShowGestureIndicator(window);
 
   if (!indicator && shouldShow) {
     indicator = [[UIView alloc] initWithFrame:CGRectZero];
@@ -276,6 +433,7 @@ static void VBUpdateGestureIndicator(UIWindow *window) {
   indicator.hidden = !shouldShow;
   if (shouldShow) {
     indicator.frame = VolumeGestureIndicatorFrame(window);
+    [window bringSubviewToFront:indicator];
   }
 }
 
@@ -286,6 +444,18 @@ static void VBScheduleGestureIndicatorUpdate(UIWindow *window) {
   dispatch_async(dispatch_get_main_queue(), ^{
     VBUpdateGestureIndicator(window);
   });
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               (int64_t)(0.12 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   VBUpdateGestureIndicator(window);
+                 });
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               (int64_t)(0.35 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   VBUpdateGestureIndicator(window);
+                 });
 }
 
 static void VBRefreshGestureIndicators(void) {
@@ -420,6 +590,24 @@ static BOOL SetCustomVolumeMultiplier(float multiplier) {
 }
 %end
 
+@interface VBVolumePanGestureRecognizer : UIPanGestureRecognizer
+@end
+
+@implementation VBVolumePanGestureRecognizer
+
+- (BOOL)canPreventGestureRecognizer:(UIGestureRecognizer *)preventedGestureRecognizer {
+  (void)preventedGestureRecognizer;
+  return YES;
+}
+
+- (BOOL)canBePreventedByGestureRecognizer:
+    (UIGestureRecognizer *)preventingGestureRecognizer {
+  (void)preventingGestureRecognizer;
+  return NO;
+}
+
+@end
+
 @interface VBVolumeGestureHandler : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, assign) UIWindow *window;
 @property(nonatomic, assign) float startMultiplier;
@@ -449,10 +637,16 @@ static BOOL SetCustomVolumeMultiplier(float multiplier) {
 
   UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gestureRecognizer;
   CGPoint velocity = [pan velocityInView:self.window];
-  CGFloat leftVelocity = -velocity.x;
+  CGFloat horizontalVelocity = fabs(velocity.x);
   CGFloat verticalVelocity = fabs(velocity.y);
 
-  return leftVelocity > 0.0f && leftVelocity > verticalVelocity;
+  if (horizontalVelocity < 6.0f && verticalVelocity < 6.0f)
+    return NO;
+
+  if (verticalVelocity >= horizontalVelocity * 0.55f)
+    return YES;
+
+  return velocity.x < 0.0f;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -460,7 +654,7 @@ static BOOL SetCustomVolumeMultiplier(float multiplier) {
         (UIGestureRecognizer *)otherGestureRecognizer {
   (void)gestureRecognizer;
   (void)otherGestureRecognizer;
-  return YES;
+  return NO;
 }
 
 - (void)handleVolumePan:(UIPanGestureRecognizer *)pan {
@@ -520,11 +714,11 @@ static void VBEnsureVolumeGestureRecognizer(UIWindow *window) {
   VBVolumeGestureHandler *handler = [[VBVolumeGestureHandler alloc] init];
   handler.window = window;
 
-  UIPanGestureRecognizer *pan =
-      [[UIPanGestureRecognizer alloc] initWithTarget:handler
-                                             action:@selector(handleVolumePan:)];
+  VBVolumePanGestureRecognizer *pan =
+      [[VBVolumePanGestureRecognizer alloc] initWithTarget:handler
+                                                   action:@selector(handleVolumePan:)];
   pan.delegate = handler;
-  pan.cancelsTouchesInView = NO;
+  pan.cancelsTouchesInView = YES;
   pan.delaysTouchesBegan = NO;
   pan.delaysTouchesEnded = NO;
   pan.minimumNumberOfTouches = 1;
@@ -537,18 +731,37 @@ static void VBEnsureVolumeGestureRecognizer(UIWindow *window) {
   [window addGestureRecognizer:pan];
 }
 
+static BOOL VBEventNeedsIndicatorRefresh(UIEvent *event) {
+  NSSet<UITouch *> *touches = [event allTouches];
+  if (touches.count == 0)
+    return YES;
+
+  for (UITouch *touch in touches) {
+    if (touch.phase == UITouchPhaseBegan ||
+        touch.phase == UITouchPhaseEnded ||
+        touch.phase == UITouchPhaseCancelled) {
+      return YES;
+    }
+  }
+
+  return NO;
+}
+
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
-  if (self.screen == [UIScreen mainScreen]) {
+  BOOL mainScreenWindow = self.screen == [UIScreen mainScreen];
+  BOOL shouldRefresh = VBEventNeedsIndicatorRefresh(event);
+
+  if (mainScreenWindow) {
     VBEnsureVolumeGestureRecognizer(self);
-    VBUpdateGestureIndicator(self);
+    if (shouldRefresh)
+      VBUpdateGestureIndicator(self);
   }
 
   %orig(event);
 
-  if (self.screen == [UIScreen mainScreen]) {
+  if (mainScreenWindow && shouldRefresh)
     VBScheduleGestureIndicatorUpdate(self);
-  }
 }
 %end
 
