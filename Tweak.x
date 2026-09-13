@@ -63,8 +63,10 @@ static NSHashTable *activeRenderers = nil;
 static dispatch_once_t activeRenderersOnce;
 static char kRendererRegisteredKey;
 static char kGestureIndicatorKey;
+static char kVolumePanRecognizerKey;
+static char kVolumePanHandlerKey;
 
-static const CGFloat kGestureRightInset = 10.0f;
+static const CGFloat kGestureRightInset = 32.0f;
 static const CGFloat kGestureHitboxWidth = 40.0f;
 static const CGFloat kGestureIndicatorWidth = 4.0f;
 static const CGFloat kGestureIndicatorHeight = 56.0f;
@@ -418,106 +420,135 @@ static BOOL SetCustomVolumeMultiplier(float multiplier) {
 }
 %end
 
-static float gestureStartMultiplier = 1.0f;
-static BOOL possibleVolumeGesture = NO;
-static BOOL isTrackingVolumeGesture = NO;
-static CGPoint initialTouchPoint;
+@interface VBVolumeGestureHandler : NSObject <UIGestureRecognizerDelegate>
+@property(nonatomic, assign) UIWindow *window;
+@property(nonatomic, assign) float startMultiplier;
+@end
 
-%hook UIWindow
-- (void)sendEvent:(UIEvent *)event {
-  if (!IsVolumeBoostYTEnabled()) {
-    %orig(event);
-    VBUpdateGestureIndicator(self);
-    return;
+@implementation VBVolumeGestureHandler
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+  (void)gestureRecognizer;
+  UIWindow *window = self.window;
+  if (!window || !IsVolumeBoostYTEnabled())
+    return NO;
+
+  if (window.screen != [UIScreen mainScreen] ||
+      window.windowLevel != UIWindowLevelNormal) {
+    return NO;
   }
 
-  if (self.screen != [UIScreen mainScreen]) {
-    %orig(event);
+  CGPoint location = [touch locationInView:window];
+  return CGRectContainsPoint(VolumeGestureHitbox(window), location);
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+  if (![gestureRecognizer isKindOfClass:[UIPanGestureRecognizer class]])
+    return YES;
+
+  UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)gestureRecognizer;
+  CGPoint velocity = [pan velocityInView:self.window];
+  CGFloat leftVelocity = -velocity.x;
+  CGFloat verticalVelocity = fabs(velocity.y);
+
+  return leftVelocity > 0.0f && leftVelocity > verticalVelocity;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+    shouldRecognizeSimultaneouslyWithGestureRecognizer:
+        (UIGestureRecognizer *)otherGestureRecognizer {
+  (void)gestureRecognizer;
+  (void)otherGestureRecognizer;
+  return YES;
+}
+
+- (void)handleVolumePan:(UIPanGestureRecognizer *)pan {
+  UIWindow *window = self.window;
+  if (!window)
     return;
+
+  switch (pan.state) {
+  case UIGestureRecognizerStateBegan: {
+    self.startMultiplier = GetCustomVolumeMultiplier();
+    [pan setTranslation:CGPointZero inView:window];
+
+    YTVolumeHUD *hud = [YTVolumeHUD sharedHUD];
+    [NSObject cancelPreviousPerformRequestsWithTarget:hud
+                                             selector:@selector(hide)
+                                               object:nil];
+    [hud showWithValue:self.startMultiplier];
+    break;
   }
 
-  VBUpdateGestureIndicator(self);
+  case UIGestureRecognizerStateChanged: {
+    CGPoint translation = [pan translationInView:window];
+    float deltaMultiplier = -translation.y / 30.0f;
+    float newMultiplier =
+        ClampVolumeMultiplier(self.startMultiplier + deltaMultiplier);
 
-  NSSet<UITouch *> *touches = [event allTouches];
-  if (touches.count == 0) {
-    %orig(event);
-    VBScheduleGestureIndicatorUpdate(self);
-    return;
-  }
-
-  UITouch *touch = [touches anyObject];
-  CGPoint location = [touch locationInView:self];
-
-  switch (touch.phase) {
-  case UITouchPhaseBegan: {
-    if (CGRectContainsPoint(VolumeGestureHitbox(self), location)) {
-      possibleVolumeGesture = YES;
-      isTrackingVolumeGesture = NO;
-      initialTouchPoint = location;
-      return;
+    if (SetCustomVolumeMultiplier(newMultiplier)) {
+      [[YTVolumeHUD sharedHUD] showWithValue:newMultiplier];
     }
     break;
   }
-  case UITouchPhaseMoved: {
-    if (possibleVolumeGesture) {
-      CGFloat dx = initialTouchPoint.x - location.x;
-      CGFloat dy = fabs(location.y - initialTouchPoint.y);
 
-      if (dx > 15.0f && dx > dy) {
-        isTrackingVolumeGesture = YES;
-        possibleVolumeGesture = NO;
-        initialTouchPoint = location;
-        gestureStartMultiplier = GetCustomVolumeMultiplier();
-
-        YTVolumeHUD *hud = [YTVolumeHUD sharedHUD];
-        [NSObject cancelPreviousPerformRequestsWithTarget:hud
-                                                 selector:@selector(hide)
-                                                   object:nil];
-        [hud showWithValue:gestureStartMultiplier];
-        return;
-      } else if (dy > 20.0f || dx < -10.0f) {
-        possibleVolumeGesture = NO;
-      } else {
-        return;
-      }
-    }
-
-    if (isTrackingVolumeGesture) {
-      CGFloat translationY = location.y - initialTouchPoint.y;
-      float deltaMultiplier = -translationY / 30.0f;
-      float newMultiplier =
-          ClampVolumeMultiplier(gestureStartMultiplier + deltaMultiplier);
-
-      if (SetCustomVolumeMultiplier(newMultiplier)) {
-        [[YTVolumeHUD sharedHUD] showWithValue:newMultiplier];
-      }
-      return;
-    }
+  case UIGestureRecognizerStateEnded:
+  case UIGestureRecognizerStateCancelled:
+  case UIGestureRecognizerStateFailed: {
+    PersistCurrentVolumeIfNeeded();
+    [[YTVolumeHUD sharedHUD] performSelector:@selector(hide)
+                                  withObject:nil
+                                  afterDelay:1.0];
     break;
   }
-  case UITouchPhaseEnded:
-  case UITouchPhaseCancelled: {
-    if (possibleVolumeGesture) {
-      possibleVolumeGesture = NO;
-      return;
-    }
-    if (isTrackingVolumeGesture) {
-      isTrackingVolumeGesture = NO;
-      PersistCurrentVolumeIfNeeded();
-      [[YTVolumeHUD sharedHUD] performSelector:@selector(hide)
-                                    withObject:nil
-                                    afterDelay:1.0];
-      return;
-    }
-    break;
-  }
+
   default:
     break;
   }
+}
+
+@end
+
+static void VBEnsureVolumeGestureRecognizer(UIWindow *window) {
+  if (!window || window.screen != [UIScreen mainScreen])
+    return;
+
+  if (objc_getAssociatedObject(window, &kVolumePanRecognizerKey))
+    return;
+
+  VBVolumeGestureHandler *handler = [[VBVolumeGestureHandler alloc] init];
+  handler.window = window;
+
+  UIPanGestureRecognizer *pan =
+      [[UIPanGestureRecognizer alloc] initWithTarget:handler
+                                             action:@selector(handleVolumePan:)];
+  pan.delegate = handler;
+  pan.cancelsTouchesInView = NO;
+  pan.delaysTouchesBegan = NO;
+  pan.delaysTouchesEnded = NO;
+  pan.minimumNumberOfTouches = 1;
+  pan.maximumNumberOfTouches = 1;
+
+  objc_setAssociatedObject(window, &kVolumePanHandlerKey, handler,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  objc_setAssociatedObject(window, &kVolumePanRecognizerKey, pan,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  [window addGestureRecognizer:pan];
+}
+
+%hook UIWindow
+- (void)sendEvent:(UIEvent *)event {
+  if (self.screen == [UIScreen mainScreen]) {
+    VBEnsureVolumeGestureRecognizer(self);
+    VBUpdateGestureIndicator(self);
+  }
 
   %orig(event);
-  VBUpdateGestureIndicator(self);
-  VBScheduleGestureIndicatorUpdate(self);
+
+  if (self.screen == [UIScreen mainScreen]) {
+    VBScheduleGestureIndicatorUpdate(self);
+  }
 }
 %end
 
