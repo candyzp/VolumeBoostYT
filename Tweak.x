@@ -66,11 +66,13 @@ static NSString *const kRememberVolumeEnabledKey = @"RememberVolumeEnabled";
 static NSString *const kCustomYouTubeVolumeScalarKey = @"CustomYouTubeVolumeScalar";
 static NSString *const kGestureMethodKey = @"VolumeBoostYTGestureMethod";
 static NSString *const kShakeSensitivityKey = @"VolumeBoostYTShakeSensitivity";
+static NSString *const kHapticFeedbackEnabledKey = @"VolumeBoostYTHapticFeedbackEnabled";
 static NSString *const kGestureMethodCellID = @"VolumeBoostYTGestureMethodCell";
 static NSString *const kShakeSensitivityCellID = @"VolumeBoostYTShakeSensitivityCell";
 
 static BOOL cachedVolumeBoostEnabled = YES;
 static BOOL cachedRememberVolumeEnabled = YES;
+static BOOL cachedHapticFeedbackEnabled = YES;
 static BOOL supportsTweaksCategoryAPI = NO;
 static VBGestureMethod cachedGestureMethod = VBGestureMethodDoubleTapSlide;
 static float cachedShakeSensitivity = 0.5f;
@@ -145,6 +147,9 @@ static void LoadPreferencesIfNeeded(void) {
   if ([defaults objectForKey:kRememberVolumeEnabledKey] != nil)
     cachedRememberVolumeEnabled = [defaults boolForKey:kRememberVolumeEnabledKey];
 
+  if ([defaults objectForKey:kHapticFeedbackEnabledKey] != nil)
+    cachedHapticFeedbackEnabled = [defaults boolForKey:kHapticFeedbackEnabledKey];
+
   if ([defaults objectForKey:kGestureMethodKey] != nil) {
     NSInteger storedMethod = [defaults integerForKey:kGestureMethodKey];
     if (storedMethod >= VBGestureMethodDoubleTapSlide &&
@@ -177,6 +182,20 @@ static inline BOOL IsVolumeBoostYTEnabled(void) {
 
 static inline BOOL IsRememberVolumeEnabled(void) {
   return cachedRememberVolumeEnabled;
+}
+
+static inline BOOL IsHapticFeedbackEnabled(void) {
+  return cachedHapticFeedbackEnabled;
+}
+
+static void VBPerformHapticFeedback(void) {
+  if (!cachedHapticFeedbackEnabled)
+    return;
+
+  UIImpactFeedbackGenerator *generator =
+      [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+  [generator prepare];
+  [generator impactOccurred];
 }
 
 static inline NSHashTable *RendererTable(void) {
@@ -378,6 +397,7 @@ static void VBConfigureShakeDetector(void) {
                                 shakeLastPeakTime = 0.0;
                                 shakeLastPeakAcceleration =
                                     (CMAcceleration){0.0, 0.0, 0.0};
+                                VBPerformHapticFeedback();
                                 VBShowShakeControl();
                                 return;
                               }
@@ -624,6 +644,7 @@ static void VBConfigureShakeDetector(void) {
   switch (gesture.state) {
   case UIGestureRecognizerStateBegan:
     self.startMultiplier = GetCustomVolumeMultiplier();
+    VBPerformHapticFeedback();
     [[YTVolumeHUD sharedHUD] showWithValue:self.startMultiplier];
     break;
 
@@ -985,7 +1006,7 @@ static void VBHideSensitivityControls(YTSettingsCell *cell) {
 
   YTSettingsSectionItem *enableTweak = [YTSettingsSectionItemClass
           switchItemWithTitle:@"Enable VolumeBoostYT"
-             titleDescription:nil
+             titleDescription:@"Allow custom Volume Boost gestures."
       accessibilityIdentifier:nil
                      switchOn:IsVolumeBoostYTEnabled()
                   switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
@@ -1003,9 +1024,60 @@ static void VBHideSensitivityControls(YTSettingsCell *cell) {
                 settingItemId:0];
   [sectionItems addObject:enableTweak];
 
+  YTSettingsSectionItem *(^sectionHeader)(NSString *) =
+      ^YTSettingsSectionItem *(NSString *title) {
+        return [YTSettingsSectionItemClass
+            itemWithTitle:@"\t"
+         titleDescription:title
+  accessibilityIdentifier:nil
+          detailTextBlock:nil
+              selectBlock:^BOOL(YTSettingsCell *cell, NSUInteger index) {
+                (void)cell;
+                (void)index;
+                return NO;
+              }];
+      };
+
+  [sectionItems addObject:sectionHeader(@"GESTURE CONTROL")];
+
+  YTSettingsSectionItem *gestureMethod = [YTSettingsSectionItemClass
+          itemWithTitle:@"Gesture Method"
+       titleDescription:@"Choose how to activate Volume Boost."
+accessibilityIdentifier:kGestureMethodCellID
+        detailTextBlock:^NSString * {
+          return VBGestureMethodName(cachedGestureMethod);
+        }
+            selectBlock:^BOOL(YTSettingsCell *cell, NSUInteger index) {
+              (void)index;
+              UIButton *button = VBInstallGestureMenuOnCell(cell);
+              if (button) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                  [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+                });
+              }
+              return YES;
+            }];
+  [sectionItems addObject:gestureMethod];
+
+  YTSettingsSectionItem *shakeSensitivity = [YTSettingsSectionItemClass
+          itemWithTitle:@"Shake Sensitivity"
+       titleDescription:@"Only used when Shake is selected."
+accessibilityIdentifier:kShakeSensitivityCellID
+        detailTextBlock:^NSString * {
+          return @"Default";
+        }
+            selectBlock:^BOOL(YTSettingsCell *cell, NSUInteger index) {
+              (void)cell;
+              (void)index;
+              return NO;
+            }];
+  [sectionItems addObject:shakeSensitivity];
+
+  [sectionItems addObject:sectionHeader(@"BEHAVIOR")];
+
   YTSettingsSectionItem *rememberVolume = [YTSettingsSectionItemClass
           switchItemWithTitle:@"Remember Volume"
-             titleDescription:nil
+             titleDescription:@"Restore your last Volume Boost level when YouTube is reopened."
       accessibilityIdentifier:nil
                      switchOn:IsRememberVolumeEnabled()
                   switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
@@ -1028,36 +1100,48 @@ static void VBHideSensitivityControls(YTSettingsCell *cell) {
                 settingItemId:1];
   [sectionItems addObject:rememberVolume];
 
-  YTSettingsSectionItem *gestureMethod = [YTSettingsSectionItemClass
-          itemWithTitle:@"Gesture Method"
-       titleDescription:nil
-accessibilityIdentifier:kGestureMethodCellID
-        detailTextBlock:^NSString * {
-          return VBGestureMethodName(cachedGestureMethod);
-        }
-            selectBlock:^BOOL(YTSettingsCell *cell, NSUInteger index) {
-              (void)index;
-              UIButton *button = VBInstallGestureMenuOnCell(cell);
-              if (button) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                  [button sendActionsForControlEvents:UIControlEventTouchUpInside];
-                });
-              }
-              return YES;
-            }];
-  [sectionItems addObject:gestureMethod];
+  YTSettingsSectionItem *hapticFeedback = [YTSettingsSectionItemClass
+          switchItemWithTitle:@"Haptic Feedback"
+             titleDescription:@"Vibrate when the gesture is activated."
+      accessibilityIdentifier:nil
+                     switchOn:IsHapticFeedbackEnabled()
+                  switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
+                    (void)cell;
+                    cachedHapticFeedbackEnabled = enabled;
+                    [[NSUserDefaults standardUserDefaults]
+                        setBool:enabled
+                         forKey:kHapticFeedbackEnabledKey];
+                    if (enabled)
+                      VBPerformHapticFeedback();
+                    return YES;
+                  }
+                settingItemId:2];
+  [sectionItems addObject:hapticFeedback];
 
-  YTSettingsSectionItem *shakeSensitivity = [YTSettingsSectionItemClass
-          itemWithTitle:@"Shake Sensitivity"
-       titleDescription:@" "
-accessibilityIdentifier:kShakeSensitivityCellID
+  [sectionItems addObject:sectionHeader(@"ABOUT")];
+
+  YTSettingsSectionItem *about = [YTSettingsSectionItemClass
+          itemWithTitle:@"VolumeBoostYT"
+       titleDescription:@"Simple. Louder. Better YouTube."
+accessibilityIdentifier:nil
         detailTextBlock:nil
             selectBlock:^BOOL(YTSettingsCell *cell, NSUInteger index) {
               (void)cell;
               (void)index;
-              return NO;
+              UIAlertController *alert =
+                  [UIAlertController alertControllerWithTitle:@"VolumeBoostYT"
+                                                     message:@"Simple. Louder. Better YouTube.\n100%–2000% Volume Boost"
+                                              preferredStyle:UIAlertControllerStyleAlert];
+              [alert addAction:[UIAlertAction actionWithTitle:@"Done"
+                                                       style:UIAlertActionStyleCancel
+                                                     handler:nil]];
+              UIViewController *presenter = activeSettingsViewController;
+              if (presenter.presentedViewController)
+                presenter = presenter.presentedViewController;
+              [presenter presentViewController:alert animated:YES completion:nil];
+              return YES;
             }];
-  [sectionItems addObject:shakeSensitivity];
+  [sectionItems addObject:about];
 
   if ([settingsViewController
           respondsToSelector:@selector
