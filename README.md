@@ -1,14 +1,17 @@
 # VolumeBoostYT
 
-Volume control tweak for the YouTube app on iOS.
+Volume boost controls for the YouTube app on iOS.
 
 ## Features
-- Right-edge swipe gesture for volume control
-- Volume range from 0% to 2000%
-- Small on-screen percentage HUD
-- Saves the selected volume level
-- Reapplies the saved level when playback or the current video changes
-- Toggle in YouTube settings
+- Double tap, hold, and slide vertically to adjust boost
+- Optional shake gesture that opens a manual boost slider
+- Double Tap & Slide, Shake, Both, and Off gesture modes
+- Adjustable shake sensitivity with cooldown protection
+- Animated top volume boost indicator
+- Volume range from 100% to 2000%
+- Saves and restores the selected boost level
+- Reapplies the selected level when playback changes
+- Native YouTube settings integration
 - Supports AVPlayer, AVAudioPlayer, AVAudioPlayerNode, and AVSampleBufferAudioRenderer
 
 ## Building
