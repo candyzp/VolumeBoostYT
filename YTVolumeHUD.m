@@ -71,6 +71,7 @@
 
   self.percentLabel = [[UILabel alloc] initWithFrame:CGRectZero];
   self.percentLabel.textAlignment = NSTextAlignmentCenter;
+  self.percentLabel.textColor = [UIColor systemBlueColor];
   self.percentLabel.font =
       [UIFont systemFontOfSize:23.0f weight:UIFontWeightBold];
   [self addSubview:self.percentLabel];
@@ -148,16 +149,21 @@
   return MAX(window.safeAreaInsets.top + 8.0f, 14.0f);
 }
 
-- (CGRect)expandedFrameForWindow:(UIWindow *)window {
-  CGFloat width = MIN(344.0f, MAX(280.0f, window.bounds.size.width - 28.0f));
-  CGFloat y = [self topYForWindow:window];
-  return CGRectMake((window.bounds.size.width - width) * 0.5f, y, width, 104.0f);
+- (CGSize)expandedSizeForWindow:(UIWindow *)window {
+  CGFloat width = MIN(344.0f, MAX(270.0f, window.bounds.size.width - 28.0f));
+  return CGSizeMake(width, 104.0f);
 }
 
-- (CGRect)collapsedFrameForWindow:(UIWindow *)window {
+- (CGSize)collapsedSizeForWindow:(UIWindow *)window {
   CGFloat width = MIN(154.0f, MAX(142.0f, window.bounds.size.width * 0.38f));
-  CGFloat y = [self topYForWindow:window];
-  return CGRectMake((window.bounds.size.width - width) * 0.5f, y, width, 44.0f);
+  return CGSizeMake(width, 44.0f);
+}
+
+- (void)setGeometryForSize:(CGSize)size inWindow:(UIWindow *)window {
+  CGFloat top = [self topYForWindow:window];
+  self.bounds = CGRectMake(0.0f, 0.0f, size.width, size.height);
+  self.center =
+      CGPointMake(CGRectGetMidX(window.bounds), top + size.height * 0.5f);
 }
 
 - (void)applyExpandedVisualState:(BOOL)expanded {
@@ -166,10 +172,6 @@
   self.closeButton.alpha = expanded ? 1.0f : 0.0f;
   self.percentLabel.textColor =
       expanded ? [UIColor systemBlueColor] : [UIColor whiteColor];
-  self.percentLabel.font =
-      [UIFont systemFontOfSize:expanded ? 23.0f : 15.0f
-                              weight:expanded ? UIFontWeightBold
-                                              : UIFontWeightSemibold];
   self.backgroundView.layer.cornerRadius = expanded ? 24.0f : 22.0f;
 }
 
@@ -188,6 +190,8 @@
     self.titleLabel.frame = CGRectZero;
     self.slider.frame = CGRectZero;
     self.closeButton.frame = CGRectZero;
+    self.percentLabel.font =
+        [UIFont systemFontOfSize:15.0f weight:UIFontWeightSemibold];
     return;
   }
 
@@ -196,6 +200,8 @@
   self.percentLabel.frame = CGRectMake(68.0f, 31.0f, width - 136.0f, 34.0f);
   self.slider.frame = CGRectMake(22.0f, height - 40.0f, width - 44.0f, 28.0f);
   self.closeButton.frame = CGRectMake(width - 40.0f, 12.0f, 28.0f, 28.0f);
+  self.percentLabel.font =
+      [UIFont systemFontOfSize:23.0f weight:UIFontWeightBold];
 }
 
 - (void)updateDisplayedValue:(float)value {
@@ -212,21 +218,16 @@
     [self.slider setValue:value animated:NO];
 }
 
-- (void)prepareClosedStateInWindow:(UIWindow *)window {
-  CGRect collapsedFrame = [self collapsedFrameForWindow:window];
-  self.frame = collapsedFrame;
+- (void)prepareHiddenStateInWindow:(UIWindow *)window {
+  CGSize collapsedSize = [self collapsedSizeForWindow:window];
+  [self setGeometryForSize:collapsedSize inWindow:window];
   self.transform =
-      CGAffineTransformMakeTranslation(0.0f, -CGRectGetMaxY(collapsedFrame) - 16.0f);
+      CGAffineTransformMakeTranslation(0.0f,
+                                       -([self topYForWindow:window] +
+                                         collapsedSize.height + 16.0f));
   self.alpha = 0.0f;
   [self applyExpandedVisualState:NO];
-  [self layoutIfNeeded];
-}
-
-- (void)prepareOpenStateInWindow:(UIWindow *)window {
-  self.frame = [self expandedFrameForWindow:window];
-  self.transform = CGAffineTransformIdentity;
-  self.alpha = 1.0f;
-  [self applyExpandedVisualState:YES];
+  [self setNeedsLayout];
   [self layoutIfNeeded];
 }
 
@@ -237,15 +238,15 @@
   if (self.superview != window) {
     [self removeFromSuperview];
     [window addSubview:self];
-    [self prepareClosedStateInWindow:window];
+    [self prepareHiddenStateInWindow:window];
   }
 
   [window bringSubviewToFront:self];
 }
 
-- (void)finishPresentationState:(BOOL)presented inWindow:(UIWindow *)window {
-  (void)window;
+- (void)finishPresentationState:(BOOL)presented {
   self.targetPresented = presented;
+  self.transitionAnimator = nil;
 
   if (presented) {
     self.userInteractionEnabled = self.interactiveMode;
@@ -287,8 +288,15 @@
   }
 
   self.targetPresented = presented;
+
   [self.transitionAnimator stopAnimation:YES];
   self.transitionAnimator = nil;
+
+  CGSize targetSize = presented ? [self expandedSizeForWindow:window]
+                                : [self collapsedSizeForWindow:window];
+  CGFloat hiddenTranslation =
+      -([self topYForWindow:window] +
+        [self collapsedSizeForWindow:window].height + 16.0f);
 
   __weak typeof(self) weakSelf = self;
   self.transitionAnimator =
@@ -299,26 +307,18 @@
                                             if (!strongSelf)
                                               return;
 
-                                            if (presented) {
-                                              strongSelf.frame =
-                                                  [strongSelf expandedFrameForWindow:window];
-                                              strongSelf.transform =
-                                                  CGAffineTransformIdentity;
-                                              strongSelf.alpha = 1.0f;
-                                              [strongSelf applyExpandedVisualState:YES];
-                                            } else {
-                                              CGRect collapsed =
-                                                  [strongSelf collapsedFrameForWindow:window];
-                                              strongSelf.frame = collapsed;
-                                              strongSelf.transform =
-                                                  CGAffineTransformMakeTranslation(
-                                                      0.0f,
-                                                      -CGRectGetMaxY(collapsed) -
-                                                          16.0f);
-                                              strongSelf.alpha = 0.0f;
-                                              [strongSelf applyExpandedVisualState:NO];
-                                            }
-
+                                            [strongSelf setGeometryForSize:targetSize
+                                                                 inWindow:window];
+                                            strongSelf.transform =
+                                                presented
+                                                    ? CGAffineTransformIdentity
+                                                    : CGAffineTransformMakeTranslation(
+                                                          0.0f,
+                                                          hiddenTranslation);
+                                            strongSelf.alpha =
+                                                presented ? 1.0f : 0.0f;
+                                            [strongSelf
+                                                applyExpandedVisualState:presented];
                                             [strongSelf layoutIfNeeded];
                                           }];
 
@@ -329,10 +329,7 @@
           return;
 
         (void)finalPosition;
-        BOOL finalPresented = strongSelf.targetPresented;
-
-        strongSelf.transitionAnimator = nil;
-        [strongSelf finishPresentationState:finalPresented inWindow:window];
+        [strongSelf finishPresentationState:strongSelf.targetPresented];
       }];
 
   [self.transitionAnimator startAnimation];
