@@ -91,6 +91,9 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
       [UIColor colorWithWhite:1.0f alpha:0.18f];
   self.slider.continuous = YES;
   [self.slider addTarget:self
+                  action:@selector(sliderInteractionBegan:)
+        forControlEvents:UIControlEventTouchDown];
+  [self.slider addTarget:self
                   action:@selector(sliderValueChanged:)
         forControlEvents:UIControlEventValueChanged];
   [self.slider addTarget:self
@@ -480,6 +483,21 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
   [self animateToPresented:shouldPresent];
 }
 
+- (void)sliderInteractionBegan:(UISlider *)slider {
+  if (!self.interactiveMode)
+    return;
+
+  [UIView animateWithDuration:0.10
+                        delay:0.0
+                      options:UIViewAnimationOptionBeginFromCurrentState |
+                              UIViewAnimationOptionAllowUserInteraction
+                   animations:^{
+                     slider.transform =
+                         CGAffineTransformMakeScale(1.0f, 0.94f);
+                   }
+                   completion:nil];
+}
+
 - (void)sliderValueChanged:(UISlider *)slider {
   if (!self.interactiveMode)
     return;
@@ -498,22 +516,20 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
   if (!self.interactiveMode)
     return;
 
-  float snapped =
-      fminf(20.0f, fmaxf(0.0f, roundf(slider.value * 4.0f) / 4.0f));
-  [self updatePercentText:snapped];
+  float value = fminf(20.0f, fmaxf(0.0f, slider.value));
+  [self updatePercentText:value];
 
   if (self.changeBlock)
-    self.changeBlock(snapped);
+    self.changeBlock(value);
 
-  [UIView animateWithDuration:0.20
+  [UIView animateWithDuration:0.24
                         delay:0.0
-       usingSpringWithDamping:0.68
-        initialSpringVelocity:0.45
+       usingSpringWithDamping:0.70
+        initialSpringVelocity:0.55
                       options:UIViewAnimationOptionBeginFromCurrentState |
                               UIViewAnimationOptionAllowUserInteraction
                    animations:^{
-                     [slider setValue:snapped animated:NO];
-                     [slider layoutIfNeeded];
+                     slider.transform = CGAffineTransformIdentity;
                    }
                    completion:nil];
 
