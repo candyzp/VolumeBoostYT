@@ -289,10 +289,10 @@
 
   __weak typeof(self) weakSelf = self;
   self.transitionAnimator =
-      [[UIViewPropertyAnimator alloc] initWithDuration:0.36
-                                         dampingRatio:0.88
-                                          animations:^{
-                                            YTVolumeHUD *strongSelf = weakSelf;
+      [[UIViewPropertyAnimator alloc] initWithDuration:0.32
+                                                curve:UIViewAnimationCurveEaseInOut
+                                           animations:^{
+                                             YTVolumeHUD *strongSelf = weakSelf;
                                             if (!strongSelf)
                                               return;
 
