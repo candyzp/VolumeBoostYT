@@ -801,6 +801,7 @@ static UILabel *VBCreateSensitivityLabel(NSString *text) {
   label.font = [UIFont systemFontOfSize:11.0f weight:UIFontWeightRegular];
   label.textColor = [UIColor secondaryLabelColor];
   label.userInteractionEnabled = NO;
+  label.translatesAutoresizingMaskIntoConstraints = NO;
   return label;
 }
 
@@ -819,6 +820,7 @@ static void VBConfigureSensitivityCell(YTSettingsCell *cell) {
     slider.minimumTrackTintColor = [UIColor systemBlueColor];
     slider.maximumTrackTintColor =
         [UIColor colorWithWhite:1.0f alpha:0.20f];
+    slider.translatesAutoresizingMaskIntoConstraints = NO;
     [slider addTarget:[VBSettingsControlBridge sharedBridge]
                   action:@selector(shakeSensitivityChanged:)
         forControlEvents:UIControlEventValueChanged];
@@ -837,22 +839,29 @@ static void VBConfigureSensitivityCell(YTSettingsCell *cell) {
     [cell.contentView addSubview:slider];
     [cell.contentView addSubview:lessLabel];
     [cell.contentView addSubview:moreLabel];
+
+    [NSLayoutConstraint activateConstraints:@[
+      [lessLabel.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor
+                                              constant:16.0f],
+      [lessLabel.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor
+                                             constant:-10.0f],
+      [lessLabel.widthAnchor constraintEqualToConstant:34.0f],
+      [moreLabel.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor
+                                                constant:-16.0f],
+      [moreLabel.bottomAnchor constraintEqualToAnchor:lessLabel.bottomAnchor],
+      [moreLabel.widthAnchor constraintEqualToConstant:34.0f],
+      [slider.leadingAnchor constraintEqualToAnchor:lessLabel.trailingAnchor
+                                            constant:3.0f],
+      [slider.trailingAnchor constraintEqualToAnchor:moreLabel.leadingAnchor
+                                             constant:-3.0f],
+      [slider.centerYAnchor constraintEqualToAnchor:lessLabel.centerYAnchor]
+    ]];
   }
 
   slider.hidden = NO;
   lessLabel.hidden = NO;
   moreLabel.hidden = NO;
   slider.value = cachedShakeSensitivity;
-
-  CGFloat width = CGRectGetWidth(cell.contentView.bounds);
-  CGFloat height = CGRectGetHeight(cell.contentView.bounds);
-  CGFloat y = MIN(MAX(39.0f, height * 0.46f),
-                  MAX(39.0f, height - 40.0f));
-
-  lessLabel.frame = CGRectMake(16.0f, y + 1.0f, 34.0f, 20.0f);
-  moreLabel.frame = CGRectMake(width - 50.0f, y + 1.0f, 34.0f, 20.0f);
-  slider.frame = CGRectMake(52.0f, y - 5.0f,
-                            MAX(90.0f, width - 104.0f), 30.0f);
 
   [cell.contentView bringSubviewToFront:slider];
   [cell.contentView bringSubviewToFront:lessLabel];
@@ -1034,7 +1043,7 @@ accessibilityIdentifier:kGestureMethodCellID
 
   YTSettingsSectionItem *shakeSensitivity = [YTSettingsSectionItemClass
           itemWithTitle:@"Shake Sensitivity"
-       titleDescription:nil
+       titleDescription:@"​"
 accessibilityIdentifier:kShakeSensitivityCellID
         detailTextBlock:^NSString * {
           return @"Default";
