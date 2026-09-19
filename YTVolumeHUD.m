@@ -275,6 +275,7 @@
     if (presented == self.targetPresented)
       return;
 
+    [self.transitionAnimator pauseAnimation];
     self.targetPresented = presented;
     self.transitionAnimator.reversed = !self.transitionAnimator.reversed;
     [self.transitionAnimator
