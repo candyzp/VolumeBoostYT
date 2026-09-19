@@ -145,7 +145,7 @@
 }
 
 - (CGFloat)topYForWindow:(UIWindow *)window {
-  return MAX(window.safeAreaInsets.top - 4.0f, 8.0f);
+  return MAX(window.safeAreaInsets.top + 8.0f, 14.0f);
 }
 
 - (CGRect)expandedFrameForWindow:(UIWindow *)window {
