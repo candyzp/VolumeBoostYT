@@ -144,15 +144,19 @@
 #pragma clang diagnostic pop
 }
 
+- (CGFloat)topYForWindow:(UIWindow *)window {
+  return MAX(window.safeAreaInsets.top - 4.0f, 8.0f);
+}
+
 - (CGRect)expandedFrameForWindow:(UIWindow *)window {
   CGFloat width = MIN(344.0f, MAX(280.0f, window.bounds.size.width - 28.0f));
-  CGFloat y = MAX(window.safeAreaInsets.top + 8.0f, 14.0f);
+  CGFloat y = [self topYForWindow:window];
   return CGRectMake((window.bounds.size.width - width) * 0.5f, y, width, 104.0f);
 }
 
 - (CGRect)collapsedFrameForWindow:(UIWindow *)window {
   CGFloat width = MIN(154.0f, MAX(142.0f, window.bounds.size.width * 0.38f));
-  CGFloat y = MAX(window.safeAreaInsets.top + 8.0f, 14.0f);
+  CGFloat y = [self topYForWindow:window];
   return CGRectMake((window.bounds.size.width - width) * 0.5f, y, width, 44.0f);
 }
 
@@ -358,12 +362,11 @@
                                            selector:@selector(hide)
                                              object:nil];
   self.interactiveMode = YES;
-  self.autoHideEnabled = YES;
+  self.autoHideEnabled = NO;
   self.changeBlock = changeBlock;
   self.userInteractionEnabled = YES;
   [self updateDisplayedValue:value];
   [self animateToPresented:YES];
-  [self scheduleHideAfterDelay:2.6];
 }
 
 - (void)toggleInteractiveWithValue:(float)value
