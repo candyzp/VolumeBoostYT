@@ -1,5 +1,6 @@
 #import "YTVolumeHUD.h"
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <math.h>
 
 @interface YTVolumeHUD ()
