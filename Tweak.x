@@ -53,10 +53,8 @@
 @end
 
 typedef NS_ENUM(NSInteger, VBGestureMethod) {
-  VBGestureMethodDoubleTapSlide = 0,
+  VBGestureMethodRightSide = 0,
   VBGestureMethodShake = 1,
-  VBGestureMethodBoth = 2,
-  VBGestureMethodOff = 3,
 };
 
 static const NSInteger TweakSection = 'ndyt';
@@ -67,6 +65,7 @@ static NSString *const kCustomYouTubeVolumeScalarKey = @"CustomYouTubeVolumeScal
 static NSString *const kGestureMethodKey = @"VolumeBoostYTGestureMethod";
 static NSString *const kShakeSensitivityKey = @"VolumeBoostYTShakeSensitivity";
 static NSString *const kHapticFeedbackEnabledKey = @"VolumeBoostYTHapticFeedbackEnabled";
+static NSString *const kRightSideTipSeenKey = @"VolumeBoostYTRightSideTipSeen";
 static NSString *const kGestureMethodCellID = @"VolumeBoostYTGestureMethodCell";
 static NSString *const kShakeSensitivityCellID = @"VolumeBoostYTShakeSensitivityCell";
 
@@ -74,7 +73,7 @@ static BOOL cachedVolumeBoostEnabled = YES;
 static BOOL cachedRememberVolumeEnabled = YES;
 static BOOL cachedHapticFeedbackEnabled = YES;
 static BOOL supportsTweaksCategoryAPI = NO;
-static VBGestureMethod cachedGestureMethod = VBGestureMethodDoubleTapSlide;
+static VBGestureMethod cachedGestureMethod = VBGestureMethodRightSide;
 static float cachedShakeSensitivity = 0.5f;
 static float currentVolumeMultiplier = 1.0f;
 static float cachedAudioMultiplier = 1.0f;
@@ -89,6 +88,7 @@ static char kGestureMenuButtonKey;
 static char kSensitivitySliderKey;
 static char kSensitivityLessLabelKey;
 static char kSensitivityMoreLabelKey;
+static char kRightSideHintKey;
 
 static __weak YTSettingsViewController *activeSettingsViewController = nil;
 static CMMotionManager *shakeMotionManager = nil;
@@ -97,8 +97,8 @@ static NSTimeInterval shakeLastTriggerTime = 0.0;
 static CMAcceleration shakeLastPeakAcceleration = {0.0, 0.0, 0.0};
 
 static inline float ClampVolumeMultiplier(float multiplier) {
-  if (multiplier < 1.0f)
-    return 1.0f;
+  if (multiplier < 0.0f)
+    return 0.0f;
   if (multiplier > 20.0f)
     return 20.0f;
   return multiplier;
@@ -110,28 +110,22 @@ static inline float CalculateAudioMultiplier(float multiplier) {
   return powf(200.0f, (multiplier - 1.0f) / 19.0f);
 }
 
-static BOOL VBGestureMethodAllowsDoubleTap(void) {
-  return cachedGestureMethod == VBGestureMethodDoubleTapSlide ||
-         cachedGestureMethod == VBGestureMethodBoth;
+static BOOL VBGestureMethodAllowsRightSide(void) {
+  return cachedGestureMethod == VBGestureMethodRightSide;
 }
 
 static BOOL VBGestureMethodAllowsShake(void) {
-  return cachedGestureMethod == VBGestureMethodShake ||
-         cachedGestureMethod == VBGestureMethodBoth;
+  return cachedGestureMethod == VBGestureMethodShake;
 }
 
 static NSString *VBGestureMethodName(VBGestureMethod method) {
   switch (method) {
-  case VBGestureMethodDoubleTapSlide:
-    return @"Double Tap & Slide";
+  case VBGestureMethodRightSide:
+    return @"Right Side";
   case VBGestureMethodShake:
     return @"Shake";
-  case VBGestureMethodBoth:
-    return @"Both";
-  case VBGestureMethodOff:
-    return @"Off";
   }
-  return @"Double Tap & Slide";
+  return @"Right Side";
 }
 
 static void LoadPreferencesIfNeeded(void) {
@@ -152,9 +146,12 @@ static void LoadPreferencesIfNeeded(void) {
 
   if ([defaults objectForKey:kGestureMethodKey] != nil) {
     NSInteger storedMethod = [defaults integerForKey:kGestureMethodKey];
-    if (storedMethod >= VBGestureMethodDoubleTapSlide &&
-        storedMethod <= VBGestureMethodOff) {
-      cachedGestureMethod = (VBGestureMethod)storedMethod;
+    cachedGestureMethod =
+        storedMethod == VBGestureMethodShake ? VBGestureMethodShake
+                                             : VBGestureMethodRightSide;
+    if (storedMethod != VBGestureMethodRightSide &&
+        storedMethod != VBGestureMethodShake) {
+      [defaults setInteger:VBGestureMethodRightSide forKey:kGestureMethodKey];
     }
   }
 
@@ -321,12 +318,15 @@ static void VBShowShakeControl(void) {
     if (!IsVolumeBoostYTEnabled() || !VBGestureMethodAllowsShake())
       return;
 
-    [[YTVolumeHUD sharedHUD]
-        showInteractiveWithValue:GetCustomVolumeMultiplier()
-                     changeBlock:^(float value) {
-                       if (SetCustomVolumeMultiplier(value))
-                         PersistCurrentVolumeIfNeeded();
-                     }];
+    YTVolumeHUD *hud = [YTVolumeHUD sharedHUD];
+    if ([hud isPresentedOrTransitioning])
+      return;
+
+    [hud showInteractiveWithValue:GetCustomVolumeMultiplier()
+                      changeBlock:^(float value) {
+                        if (SetCustomVolumeMultiplier(value))
+                          PersistCurrentVolumeIfNeeded();
+                      }];
   });
 }
 
@@ -408,194 +408,140 @@ static void VBConfigureShakeDetector(void) {
                           }];
 }
 
-@interface VBDoubleTapSlideGestureRecognizer : UIGestureRecognizer
-@property(nonatomic, assign) NSInteger sequenceStage;
-@property(nonatomic, assign) NSInteger timeoutToken;
-@property(nonatomic, assign) CGPoint firstStartPoint;
-@property(nonatomic, assign) CGPoint firstEndPoint;
-@property(nonatomic, assign) CGPoint secondStartPoint;
-@property(nonatomic, assign) CGPoint currentPoint;
-@property(nonatomic, assign) CGPoint activationPoint;
-@property(nonatomic, assign) NSTimeInterval firstStartTime;
-@property(nonatomic, assign) NSTimeInterval firstEndTime;
-@property(nonatomic, assign) NSTimeInterval secondStartTime;
-@property(nonatomic, assign) BOOL activated;
-- (CGFloat)effectiveTranslationY;
-@end
+static CGRect VBRightSideActivationRect(UIWindow *window) {
+  if (!window)
+    return CGRectZero;
 
-@implementation VBDoubleTapSlideGestureRecognizer
+  CGFloat width = CGRectGetWidth(window.bounds);
+  CGFloat height = CGRectGetHeight(window.bounds);
+  CGFloat bandHeight = MIN(320.0f, MAX(220.0f, height * 0.34f));
 
-- (void)reset {
-  [super reset];
-  self.sequenceStage = 0;
-  self.timeoutToken += 1;
-  self.firstStartPoint = CGPointZero;
-  self.firstEndPoint = CGPointZero;
-  self.secondStartPoint = CGPointZero;
-  self.currentPoint = CGPointZero;
-  self.activationPoint = CGPointZero;
-  self.firstStartTime = 0.0;
-  self.firstEndTime = 0.0;
-  self.secondStartTime = 0.0;
-  self.activated = NO;
+  if (width > height)
+    bandHeight = MIN(220.0f, MAX(150.0f, height * 0.50f));
+
+  CGFloat centerY = height * 0.52f;
+  CGFloat y = centerY - bandHeight * 0.5f;
+  y = MAX(window.safeAreaInsets.top + 8.0f, y);
+  y = MIN(y, height - window.safeAreaInsets.bottom - bandHeight - 8.0f);
+
+  return CGRectMake(MAX(0.0f, width - 34.0f), y, 34.0f, bandHeight);
 }
 
-- (CGFloat)effectiveTranslationY {
-  if (!self.activated)
-    return 0.0f;
-  return self.currentPoint.y - self.activationPoint.y;
+static void VBHideRightSideHint(UIWindow *window) {
+  if (!window)
+    return;
+
+  UIView *hint = objc_getAssociatedObject(window, &kRightSideHintKey);
+  if (!hint)
+    return;
+
+  objc_setAssociatedObject(window, &kRightSideHintKey, nil,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+  [UIView animateWithDuration:0.20
+                   animations:^{
+                     hint.alpha = 0.0f;
+                   }
+                   completion:^(BOOL finished) {
+                     (void)finished;
+                     [hint removeFromSuperview];
+                   }];
 }
 
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-  (void)event;
-
-  if (touches.count != 1) {
-    self.state = UIGestureRecognizerStateFailed;
-    return;
-  }
-
-  UITouch *touch = touches.anyObject;
-  CGPoint point = [touch locationInView:self.view];
-
-  if (self.sequenceStage == 0) {
-    self.sequenceStage = 1;
-    self.firstStartPoint = point;
-    self.firstStartTime = touch.timestamp;
-    return;
-  }
-
-  if (self.sequenceStage != 2) {
-    self.state = UIGestureRecognizerStateFailed;
-    return;
-  }
-
-  NSTimeInterval gap = touch.timestamp - self.firstEndTime;
-  CGFloat dx = point.x - self.firstEndPoint.x;
-  CGFloat dy = point.y - self.firstEndPoint.y;
-  CGFloat distance = hypot(dx, dy);
-
-  if (gap < 0.025 || gap > 0.34 || distance > 74.0f) {
-    self.state = UIGestureRecognizerStateFailed;
-    return;
-  }
-
-  self.sequenceStage = 3;
-  self.secondStartPoint = point;
-  self.currentPoint = point;
-  self.secondStartTime = touch.timestamp;
-}
-
-- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-  (void)event;
-
-  UITouch *touch = touches.anyObject;
-  if (!touch)
+static void VBJumpRightSideHint(UIWindow *window, UIView *hint) {
+  if (!window || !hint || hint.superview != window)
     return;
 
-  CGPoint point = [touch locationInView:self.view];
-  self.currentPoint = point;
-
-  if (self.sequenceStage == 1) {
-    CGFloat dx = point.x - self.firstStartPoint.x;
-    CGFloat dy = point.y - self.firstStartPoint.y;
-    if (hypot(dx, dy) > 11.0f)
-      self.state = UIGestureRecognizerStateFailed;
-    return;
-  }
-
-  if (self.sequenceStage != 3)
-    return;
-
-  CGFloat dx = point.x - self.secondStartPoint.x;
-  CGFloat dy = point.y - self.secondStartPoint.y;
-  CGFloat absX = fabs(dx);
-  CGFloat absY = fabs(dy);
-  NSTimeInterval held = touch.timestamp - self.secondStartTime;
-
-  if (!self.activated) {
-    if (absX > 22.0f && absX > absY * 1.35f) {
-      self.state = UIGestureRecognizerStateFailed;
-      return;
-    }
-
-    if (held < 0.045 || absY < 14.0f || absY < absX * 0.78f)
-      return;
-
-    self.activated = YES;
-    self.activationPoint = point;
-    self.state = UIGestureRecognizerStateBegan;
-    return;
-  }
-
-  self.state = UIGestureRecognizerStateChanged;
-}
-
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
-  (void)event;
-
-  UITouch *touch = touches.anyObject;
-  if (!touch) {
-    self.state = self.activated ? UIGestureRecognizerStateEnded
-                                : UIGestureRecognizerStateFailed;
-    return;
-  }
-
-  CGPoint point = [touch locationInView:self.view];
-
-  if (self.sequenceStage == 1) {
-    CGFloat dx = point.x - self.firstStartPoint.x;
-    CGFloat dy = point.y - self.firstStartPoint.y;
-    NSTimeInterval duration = touch.timestamp - self.firstStartTime;
-
-    if (duration > 0.22 || hypot(dx, dy) > 11.0f) {
-      self.state = UIGestureRecognizerStateFailed;
-      return;
-    }
-
-    self.firstEndPoint = point;
-    self.firstEndTime = touch.timestamp;
-    self.sequenceStage = 2;
-    NSInteger token = ++self.timeoutToken;
-    __weak typeof(self) weakSelf = self;
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.36 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-                     VBDoubleTapSlideGestureRecognizer *strongSelf = weakSelf;
-                     if (!strongSelf)
+  [UIView animateWithDuration:0.20
+                        delay:0.0
+       usingSpringWithDamping:0.58
+        initialSpringVelocity:0.2
+                      options:UIViewAnimationOptionBeginFromCurrentState |
+                              UIViewAnimationOptionAllowUserInteraction
+                   animations:^{
+                     hint.transform =
+                         CGAffineTransformMakeTranslation(-11.0f, 0.0f);
+                   }
+                   completion:^(BOOL finished) {
+                     if (!finished || hint.superview != window)
                        return;
-                     if (strongSelf.state == UIGestureRecognizerStatePossible &&
-                         strongSelf.sequenceStage == 2 &&
-                         strongSelf.timeoutToken == token) {
-                       strongSelf.state = UIGestureRecognizerStateFailed;
-                     }
-                   });
+
+                     [UIView animateWithDuration:0.24
+                                           delay:0.03
+                          usingSpringWithDamping:0.72
+                           initialSpringVelocity:0.1
+                                         options:UIViewAnimationOptionBeginFromCurrentState |
+                                                 UIViewAnimationOptionAllowUserInteraction
+                                      animations:^{
+                                        hint.transform =
+                                            CGAffineTransformIdentity;
+                                      }
+                                      completion:nil];
+                   }];
+}
+
+static void VBShowRightSideHintIfNeeded(UIWindow *window) {
+  if (!window || window.screen != [UIScreen mainScreen] ||
+      window.windowLevel != UIWindowLevelNormal || !window.isKeyWindow ||
+      !IsVolumeBoostYTEnabled() || !VBGestureMethodAllowsRightSide()) {
     return;
   }
 
-  if (self.sequenceStage == 3) {
-    self.currentPoint = point;
-    self.state = self.activated ? UIGestureRecognizerStateEnded
-                                : UIGestureRecognizerStateFailed;
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  if ([defaults boolForKey:kRightSideTipSeenKey])
     return;
+
+  [defaults setBool:YES forKey:kRightSideTipSeenKey];
+
+  CGRect activationRect = VBRightSideActivationRect(window);
+  CGFloat pillHeight = 58.0f;
+  UIView *hint = [[UIView alloc]
+      initWithFrame:CGRectMake(CGRectGetWidth(window.bounds) - 7.0f,
+                               CGRectGetMidY(activationRect) -
+                                   pillHeight * 0.5f,
+                               5.0f, pillHeight)];
+  hint.userInteractionEnabled = NO;
+  hint.backgroundColor = [UIColor systemBlueColor];
+  hint.layer.cornerRadius = 2.5f;
+  hint.layer.shadowColor = [UIColor systemBlueColor].CGColor;
+  hint.layer.shadowOpacity = 0.38f;
+  hint.layer.shadowRadius = 7.0f;
+  hint.layer.shadowOffset = CGSizeZero;
+  hint.alpha = 0.0f;
+
+  objc_setAssociatedObject(window, &kRightSideHintKey, hint,
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  [window addSubview:hint];
+  [window bringSubviewToFront:hint];
+
+  [UIView animateWithDuration:0.25
+                   animations:^{
+                     hint.alpha = 0.92f;
+                   }];
+
+  NSArray<NSNumber *> *delays = @[ @0.7, @2.8, @5.1, @7.5 ];
+  for (NSNumber *delay in delays) {
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW,
+                      (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+        dispatch_get_main_queue(), ^{
+          if (objc_getAssociatedObject(window, &kRightSideHintKey) == hint)
+            VBJumpRightSideHint(window, hint);
+        });
   }
 
-  self.state = UIGestureRecognizerStateFailed;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               (int64_t)(10.0 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (objc_getAssociatedObject(window, &kRightSideHintKey) ==
+                       hint) {
+                     VBHideRightSideHint(window);
+                   }
+                 });
 }
-
-- (void)touchesCancelled:(NSSet<UITouch *> *)touches
-               withEvent:(UIEvent *)event {
-  (void)touches;
-  (void)event;
-  self.state = self.activated ? UIGestureRecognizerStateCancelled
-                              : UIGestureRecognizerStateFailed;
-}
-
-@end
 
 @interface VBVolumeGestureHandler : NSObject <UIGestureRecognizerDelegate>
 @property(nonatomic, weak) UIWindow *window;
-@property(nonatomic, assign) float startMultiplier;
 @end
 
 @implementation VBVolumeGestureHandler
@@ -606,7 +552,7 @@ static void VBConfigureShakeDetector(void) {
 
   UIWindow *window = self.window;
   if (!window || !IsVolumeBoostYTEnabled() ||
-      !VBGestureMethodAllowsDoubleTap()) {
+      !VBGestureMethodAllowsRightSide()) {
     return NO;
   }
 
@@ -615,17 +561,34 @@ static void VBConfigureShakeDetector(void) {
     return NO;
   }
 
+  CGPoint location = [touch locationInView:window];
+  if (!CGRectContainsPoint(VBRightSideActivationRect(window), location))
+    return NO;
+
   UIView *view = touch.view;
   for (UIView *candidate = view; candidate && candidate != window;
        candidate = candidate.superview) {
-    if ([candidate isKindOfClass:[UIControl class]] ||
-        [candidate isKindOfClass:[UITextField class]] ||
+    if ([candidate isKindOfClass:[UITextField class]] ||
         [candidate isKindOfClass:[UITextView class]]) {
       return NO;
     }
   }
 
   return YES;
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+  if (![gestureRecognizer isKindOfClass:[UIPanGestureRecognizer class]])
+    return YES;
+
+  UIPanGestureRecognizer *pan =
+      (UIPanGestureRecognizer *)gestureRecognizer;
+  CGPoint velocity = [pan velocityInView:self.window];
+
+  if (velocity.x >= -35.0f)
+    return NO;
+
+  return fabs(velocity.x) > fabs(velocity.y) * 1.10f;
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -636,40 +599,23 @@ static void VBConfigureShakeDetector(void) {
   return NO;
 }
 
-- (void)handleDoubleTapSlide:(VBDoubleTapSlideGestureRecognizer *)gesture {
+- (void)handleRightSidePan:(UIPanGestureRecognizer *)pan {
+  if (pan.state != UIGestureRecognizerStateBegan)
+    return;
+
   UIWindow *window = self.window;
   if (!window)
     return;
 
-  switch (gesture.state) {
-  case UIGestureRecognizerStateBegan:
-    self.startMultiplier = GetCustomVolumeMultiplier();
-    VBPerformHapticFeedback();
-    [[YTVolumeHUD sharedHUD] showWithValue:self.startMultiplier];
-    break;
+  VBHideRightSideHint(window);
+  VBPerformHapticFeedback();
 
-  case UIGestureRecognizerStateChanged: {
-    CGFloat travel = MAX(220.0f, window.bounds.size.height * 0.55f);
-    float deltaMultiplier =
-        (float)(-gesture.effectiveTranslationY / travel * 19.0f);
-    float newMultiplier =
-        ClampVolumeMultiplier(self.startMultiplier + deltaMultiplier);
-
-    if (SetCustomVolumeMultiplier(newMultiplier))
-      [[YTVolumeHUD sharedHUD] showWithValue:newMultiplier];
-    break;
-  }
-
-  case UIGestureRecognizerStateEnded:
-  case UIGestureRecognizerStateCancelled:
-  case UIGestureRecognizerStateFailed:
-    PersistCurrentVolumeIfNeeded();
-    [[YTVolumeHUD sharedHUD] scheduleHideAfterDelay:0.9];
-    break;
-
-  default:
-    break;
-  }
+  [[YTVolumeHUD sharedHUD]
+      toggleInteractiveWithValue:GetCustomVolumeMultiplier()
+                     changeBlock:^(float value) {
+                       if (SetCustomVolumeMultiplier(value))
+                         PersistCurrentVolumeIfNeeded();
+                     }];
 }
 
 @end
@@ -684,28 +630,56 @@ static void VBEnsureVolumeGestureRecognizer(UIWindow *window) {
   VBVolumeGestureHandler *handler = [[VBVolumeGestureHandler alloc] init];
   handler.window = window;
 
-  VBDoubleTapSlideGestureRecognizer *gesture =
-      [[VBDoubleTapSlideGestureRecognizer alloc]
-          initWithTarget:handler
-                  action:@selector(handleDoubleTapSlide:)];
-  gesture.delegate = handler;
-  gesture.cancelsTouchesInView = YES;
-  gesture.delaysTouchesBegan = NO;
-  gesture.delaysTouchesEnded = NO;
+  UIPanGestureRecognizer *pan =
+      [[UIPanGestureRecognizer alloc] initWithTarget:handler
+                                             action:@selector(handleRightSidePan:)];
+  pan.delegate = handler;
+  pan.cancelsTouchesInView = YES;
+  pan.delaysTouchesBegan = NO;
+  pan.delaysTouchesEnded = NO;
+  pan.minimumNumberOfTouches = 1;
+  pan.maximumNumberOfTouches = 1;
 
   objc_setAssociatedObject(window, &kVolumeGestureHandlerKey, handler,
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  objc_setAssociatedObject(window, &kVolumeGestureRecognizerKey, gesture,
+  objc_setAssociatedObject(window, &kVolumeGestureRecognizerKey, pan,
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  [window addGestureRecognizer:gesture];
+  [window addGestureRecognizer:pan];
+}
+
+static void VBScheduleRightSideHint(UIWindow *window) {
+  if (!window)
+    return;
+
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                               (int64_t)(0.65 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   VBShowRightSideHintIfNeeded(window);
+                 });
 }
 
 %hook UIWindow
+
 - (void)sendEvent:(UIEvent *)event {
-  if (self.screen == [UIScreen mainScreen])
+  if (self.screen == [UIScreen mainScreen]) {
     VBEnsureVolumeGestureRecognizer(self);
+    VBShowRightSideHintIfNeeded(self);
+  }
   %orig(event);
 }
+
+- (void)makeKeyAndVisible {
+  %orig;
+  VBEnsureVolumeGestureRecognizer(self);
+  VBScheduleRightSideHint(self);
+}
+
+- (void)becomeKeyWindow {
+  %orig;
+  VBEnsureVolumeGestureRecognizer(self);
+  VBScheduleRightSideHint(self);
+}
+
 %end
 
 static void VBSetGestureMethod(VBGestureMethod method) {
@@ -713,9 +687,7 @@ static void VBSetGestureMethod(VBGestureMethod method) {
   [[NSUserDefaults standardUserDefaults] setInteger:method
                                              forKey:kGestureMethodKey];
 
-  if (method == VBGestureMethodOff)
-    [[YTVolumeHUD sharedHUD] hide];
-
+  [[YTVolumeHUD sharedHUD] hide];
   VBConfigureShakeDetector();
 
   YTSettingsViewController *controller = activeSettingsViewController;
@@ -725,8 +697,7 @@ static void VBSetGestureMethod(VBGestureMethod method) {
 
 static UIMenu *VBBuildGestureMethodMenu(void) {
   NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
-  NSArray<NSString *> *titles =
-      @[ @"Double Tap & Slide", @"Shake", @"Both", @"Off" ];
+  NSArray<NSString *> *titles = @[ @"Right Side", @"Shake" ];
 
   for (NSInteger index = 0; index < (NSInteger)titles.count; index++) {
     VBGestureMethod method = (VBGestureMethod)index;
@@ -1042,7 +1013,7 @@ static void VBHideSensitivityControls(YTSettingsCell *cell) {
 
   YTSettingsSectionItem *gestureMethod = [YTSettingsSectionItemClass
           itemWithTitle:@"Gesture Method"
-       titleDescription:@"Choose how to activate Volume Boost."
+       titleDescription:@"Right Side swipes from the middle-right edge."
 accessibilityIdentifier:kGestureMethodCellID
         detailTextBlock:^NSString * {
           return VBGestureMethodName(cachedGestureMethod);
@@ -1061,7 +1032,7 @@ accessibilityIdentifier:kGestureMethodCellID
 
   YTSettingsSectionItem *shakeSensitivity = [YTSettingsSectionItemClass
           itemWithTitle:@"Shake Sensitivity"
-       titleDescription:@"Only used when Shake is selected."
+       titleDescription:nil
 accessibilityIdentifier:kShakeSensitivityCellID
         detailTextBlock:^NSString * {
           return @"Default";
@@ -1130,7 +1101,7 @@ accessibilityIdentifier:nil
               (void)index;
               UIAlertController *alert =
                   [UIAlertController alertControllerWithTitle:@"VolumeBoostYT"
-                                                     message:@"Simple. Louder. Better YouTube.\n100%–2000% Volume Boost"
+                                                     message:@"Simple. Louder. Better YouTube.\n0%–2000% Volume Boost"
                                               preferredStyle:UIAlertControllerStyleAlert];
               [alert addAction:[UIAlertAction actionWithTitle:@"Done"
                                                        style:UIAlertActionStyleCancel
