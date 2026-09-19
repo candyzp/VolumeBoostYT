@@ -240,15 +240,14 @@
 }
 
 - (void)finishPresentationState:(BOOL)presented inWindow:(UIWindow *)window {
+  (void)window;
   self.targetPresented = presented;
 
   if (presented) {
-    [self prepareOpenStateInWindow:window];
     self.userInteractionEnabled = self.interactiveMode;
     return;
   }
 
-  [self prepareClosedStateInWindow:window];
   [self removeFromSuperview];
   self.userInteractionEnabled = NO;
   self.changeBlock = nil;
@@ -289,10 +288,10 @@
 
   __weak typeof(self) weakSelf = self;
   self.transitionAnimator =
-      [[UIViewPropertyAnimator alloc] initWithDuration:0.32
-                                                curve:UIViewAnimationCurveEaseInOut
-                                           animations:^{
-                                             YTVolumeHUD *strongSelf = weakSelf;
+      [[UIViewPropertyAnimator alloc] initWithDuration:0.36
+                                         dampingRatio:0.88
+                                          animations:^{
+                                            YTVolumeHUD *strongSelf = weakSelf;
                                             if (!strongSelf)
                                               return;
 
