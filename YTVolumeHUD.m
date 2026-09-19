@@ -3,6 +3,14 @@
 #import <UIKit/UIKit.h>
 #import <math.h>
 
+typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
+  YTVolumeHUDTransitionPhaseIdle = 0,
+  YTVolumeHUDTransitionPhaseEntering = 1,
+  YTVolumeHUDTransitionPhaseExpanding = 2,
+  YTVolumeHUDTransitionPhaseShrinking = 3,
+  YTVolumeHUDTransitionPhaseLeaving = 4,
+};
+
 @interface YTVolumeHUD ()
 @property(nonatomic, strong) UIVisualEffectView *backgroundView;
 @property(nonatomic, strong) UIImageView *iconView;
@@ -10,8 +18,9 @@
 @property(nonatomic, strong) UILabel *percentLabel;
 @property(nonatomic, strong) UISlider *slider;
 @property(nonatomic, strong) UIButton *closeButton;
-@property(nonatomic, strong) UIViewPropertyAnimator *transitionAnimator;
 @property(nonatomic, assign) NSInteger lastDisplayedPercent;
+@property(nonatomic, assign) NSInteger animationToken;
+@property(nonatomic, assign) YTVolumeHUDTransitionPhase transitionPhase;
 @property(nonatomic, assign) BOOL interactiveMode;
 @property(nonatomic, assign) BOOL autoHideEnabled;
 @property(nonatomic, assign) BOOL targetPresented;
@@ -37,6 +46,7 @@
   self.clipsToBounds = NO;
   self.alpha = 0.0f;
   self.lastDisplayedPercent = NSIntegerMin;
+  self.transitionPhase = YTVolumeHUDTransitionPhaseIdle;
 
   UIBlurEffect *blur =
       [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark];
@@ -71,9 +81,6 @@
 
   self.percentLabel = [[UILabel alloc] initWithFrame:CGRectZero];
   self.percentLabel.textAlignment = NSTextAlignmentCenter;
-  self.percentLabel.textColor = [UIColor systemBlueColor];
-  self.percentLabel.font =
-      [UIFont systemFontOfSize:23.0f weight:UIFontWeightBold];
   [self addSubview:self.percentLabel];
 
   self.slider = [[UISlider alloc] initWithFrame:CGRectZero];
@@ -101,7 +108,8 @@
                                  withConfiguration:closeConfig];
   [self.closeButton setImage:closeImage forState:UIControlStateNormal];
   self.closeButton.tintColor = [UIColor colorWithWhite:1.0f alpha:0.78f];
-  self.closeButton.backgroundColor = [UIColor colorWithWhite:1.0f alpha:0.08f];
+  self.closeButton.backgroundColor =
+      [UIColor colorWithWhite:1.0f alpha:0.08f];
   self.closeButton.layer.cornerRadius = 14.0f;
   self.closeButton.layer.cornerCurve = kCACornerCurveContinuous;
   [self.closeButton addTarget:self
@@ -109,6 +117,7 @@
              forControlEvents:UIControlEventTouchUpInside];
   [self addSubview:self.closeButton];
 
+  [self setExpandedVisuals:NO];
   return self;
 }
 
@@ -166,13 +175,18 @@
       CGPointMake(CGRectGetMidX(window.bounds), top + size.height * 0.5f);
 }
 
-- (void)applyExpandedVisualState:(BOOL)expanded {
-  self.titleLabel.alpha = expanded ? 1.0f : 0.0f;
-  self.slider.alpha = expanded ? 1.0f : 0.0f;
-  self.closeButton.alpha = expanded ? 1.0f : 0.0f;
+- (void)setExpandedVisuals:(BOOL)expanded {
+  self.titleLabel.hidden = !expanded;
+  self.slider.hidden = !expanded;
+  self.closeButton.hidden = !expanded;
   self.percentLabel.textColor =
       expanded ? [UIColor systemBlueColor] : [UIColor whiteColor];
+  self.percentLabel.font =
+      [UIFont systemFontOfSize:expanded ? 23.0f : 15.0f
+                              weight:expanded ? UIFontWeightBold
+                                              : UIFontWeightSemibold];
   self.backgroundView.layer.cornerRadius = expanded ? 24.0f : 22.0f;
+  [self setNeedsLayout];
 }
 
 - (void)layoutSubviews {
@@ -190,8 +204,6 @@
     self.titleLabel.frame = CGRectZero;
     self.slider.frame = CGRectZero;
     self.closeButton.frame = CGRectZero;
-    self.percentLabel.font =
-        [UIFont systemFontOfSize:15.0f weight:UIFontWeightSemibold];
     return;
   }
 
@@ -200,19 +212,21 @@
   self.percentLabel.frame = CGRectMake(68.0f, 31.0f, width - 136.0f, 34.0f);
   self.slider.frame = CGRectMake(22.0f, height - 40.0f, width - 44.0f, 28.0f);
   self.closeButton.frame = CGRectMake(width - 40.0f, 12.0f, 28.0f, 28.0f);
-  self.percentLabel.font =
-      [UIFont systemFontOfSize:23.0f weight:UIFontWeightBold];
+}
+
+- (void)updatePercentText:(float)value {
+  NSInteger percent = lroundf(value * 100.0f);
+  if (percent == self.lastDisplayedPercent)
+    return;
+
+  self.lastDisplayedPercent = percent;
+  self.percentLabel.text =
+      [NSString stringWithFormat:@"%ld%%", (long)percent];
 }
 
 - (void)updateDisplayedValue:(float)value {
   value = fminf(20.0f, fmaxf(0.0f, value));
-  NSInteger percent = lroundf(value * 100.0f);
-
-  if (percent != self.lastDisplayedPercent) {
-    self.lastDisplayedPercent = percent;
-    self.percentLabel.text =
-        [NSString stringWithFormat:@"%ld%%", (long)percent];
-  }
+  [self updatePercentText:value];
 
   if (fabsf(self.slider.value - value) > 0.002f)
     [self.slider setValue:value animated:NO];
@@ -221,13 +235,12 @@
 - (void)prepareHiddenStateInWindow:(UIWindow *)window {
   CGSize collapsedSize = [self collapsedSizeForWindow:window];
   [self setGeometryForSize:collapsedSize inWindow:window];
+  [self setExpandedVisuals:NO];
   self.transform =
-      CGAffineTransformMakeTranslation(0.0f,
-                                       -([self topYForWindow:window] +
-                                         collapsedSize.height + 16.0f));
+      CGAffineTransformMakeTranslation(
+          0.0f,
+          -([self topYForWindow:window] + collapsedSize.height + 18.0f));
   self.alpha = 0.0f;
-  [self applyExpandedVisualState:NO];
-  [self setNeedsLayout];
   [self layoutIfNeeded];
 }
 
@@ -244,26 +257,143 @@
   [window bringSubviewToFront:self];
 }
 
-- (void)finishPresentationState:(BOOL)presented {
-  self.targetPresented = presented;
-  self.transitionAnimator = nil;
-
-  if (presented) {
-    self.userInteractionEnabled = self.interactiveMode;
+- (void)expandFromCurrentWithToken:(NSInteger)token
+                          inWindow:(UIWindow *)window {
+  if (token != self.animationToken || !self.targetPresented)
     return;
-  }
 
-  [self removeFromSuperview];
-  self.userInteractionEnabled = NO;
-  self.changeBlock = nil;
-  self.interactiveMode = NO;
-  self.autoHideEnabled = NO;
+  self.transitionPhase = YTVolumeHUDTransitionPhaseExpanding;
+  [self setExpandedVisuals:YES];
+
+  [UIView animateWithDuration:0.24
+                        delay:0.03
+       usingSpringWithDamping:0.84
+        initialSpringVelocity:0.15
+                      options:UIViewAnimationOptionBeginFromCurrentState |
+                              UIViewAnimationOptionAllowUserInteraction
+                   animations:^{
+                     [self setGeometryForSize:[self expandedSizeForWindow:window]
+                                    inWindow:window];
+                     self.transform = CGAffineTransformIdentity;
+                     self.alpha = 1.0f;
+                     [self layoutIfNeeded];
+                   }
+                   completion:^(BOOL finished) {
+                     if (!finished || token != self.animationToken ||
+                         !self.targetPresented)
+                       return;
+
+                     self.transitionPhase = YTVolumeHUDTransitionPhaseIdle;
+                     self.userInteractionEnabled = self.interactiveMode;
+                   }];
+}
+
+- (void)enterFromCurrentWithToken:(NSInteger)token
+                         inWindow:(UIWindow *)window {
+  if (token != self.animationToken || !self.targetPresented)
+    return;
+
+  self.transitionPhase = YTVolumeHUDTransitionPhaseEntering;
+  [self setExpandedVisuals:NO];
+
+  [UIView animateWithDuration:0.18
+                        delay:0.0
+       usingSpringWithDamping:0.88
+        initialSpringVelocity:0.2
+                      options:UIViewAnimationOptionBeginFromCurrentState |
+                              UIViewAnimationOptionAllowUserInteraction
+                   animations:^{
+                     [self setGeometryForSize:[self collapsedSizeForWindow:window]
+                                    inWindow:window];
+                     self.transform = CGAffineTransformIdentity;
+                     self.alpha = 1.0f;
+                     [self layoutIfNeeded];
+                   }
+                   completion:^(BOOL finished) {
+                     if (!finished || token != self.animationToken ||
+                         !self.targetPresented)
+                       return;
+
+                     [self expandFromCurrentWithToken:token inWindow:window];
+                   }];
+}
+
+- (void)leaveFromCurrentWithToken:(NSInteger)token
+                         inWindow:(UIWindow *)window {
+  if (token != self.animationToken || self.targetPresented)
+    return;
+
+  self.transitionPhase = YTVolumeHUDTransitionPhaseLeaving;
+  [self setExpandedVisuals:NO];
+
+  CGFloat travel =
+      [self topYForWindow:window] +
+      [self collapsedSizeForWindow:window].height + 18.0f;
+
+  [UIView animateWithDuration:0.20
+                        delay:0.04
+                      options:UIViewAnimationOptionBeginFromCurrentState |
+                              UIViewAnimationOptionAllowUserInteraction |
+                              UIViewAnimationOptionCurveEaseIn
+                   animations:^{
+                     [self setGeometryForSize:[self collapsedSizeForWindow:window]
+                                    inWindow:window];
+                     self.transform =
+                         CGAffineTransformMakeTranslation(0.0f, -travel);
+                     self.alpha = 0.0f;
+                     [self layoutIfNeeded];
+                   }
+                   completion:^(BOOL finished) {
+                     if (!finished || token != self.animationToken ||
+                         self.targetPresented)
+                       return;
+
+                     self.transitionPhase = YTVolumeHUDTransitionPhaseIdle;
+                     [self removeFromSuperview];
+                     self.transform = CGAffineTransformIdentity;
+                     self.userInteractionEnabled = NO;
+                     self.changeBlock = nil;
+                     self.interactiveMode = NO;
+                     self.autoHideEnabled = NO;
+                   }];
+}
+
+- (void)shrinkFromCurrentWithToken:(NSInteger)token
+                          inWindow:(UIWindow *)window {
+  if (token != self.animationToken || self.targetPresented)
+    return;
+
+  self.transitionPhase = YTVolumeHUDTransitionPhaseShrinking;
+  [self setExpandedVisuals:NO];
+
+  [UIView animateWithDuration:0.15
+                        delay:0.0
+                      options:UIViewAnimationOptionBeginFromCurrentState |
+                              UIViewAnimationOptionAllowUserInteraction |
+                              UIViewAnimationOptionCurveEaseInOut
+                   animations:^{
+                     [self setGeometryForSize:[self collapsedSizeForWindow:window]
+                                    inWindow:window];
+                     self.transform = CGAffineTransformIdentity;
+                     self.alpha = 1.0f;
+                     [self layoutIfNeeded];
+                   }
+                   completion:^(BOOL finished) {
+                     if (!finished || token != self.animationToken ||
+                         self.targetPresented)
+                       return;
+
+                     [self leaveFromCurrentWithToken:token inWindow:window];
+                   }];
 }
 
 - (void)animateToPresented:(BOOL)presented {
   UIWindow *window = [self activeWindow];
   if (!window && presented)
     return;
+
+  YTVolumeHUDTransitionPhase oldPhase = self.transitionPhase;
+  BOOL wasAttached = self.superview != nil;
 
   if (presented)
     [self ensureAttachedToWindow:window];
@@ -272,73 +402,39 @@
     return;
 
   window = (UIWindow *)self.superview;
+  NSInteger token = ++self.animationToken;
+  self.targetPresented = presented;
 
-  if (self.transitionAnimator &&
-      self.transitionAnimator.state == UIViewAnimatingStateActive) {
-    if (presented == self.targetPresented)
+  if (presented) {
+    if (!wasAttached || oldPhase == YTVolumeHUDTransitionPhaseEntering ||
+        oldPhase == YTVolumeHUDTransitionPhaseLeaving) {
+      [self enterFromCurrentWithToken:token inWindow:window];
       return;
+    }
 
-    [self.transitionAnimator pauseAnimation];
-    self.targetPresented = presented;
-    self.transitionAnimator.reversed = !self.transitionAnimator.reversed;
-    [self.transitionAnimator
-        continueAnimationWithTimingParameters:nil
-                               durationFactor:1.0f];
+    if (oldPhase == YTVolumeHUDTransitionPhaseShrinking) {
+      [self expandFromCurrentWithToken:token inWindow:window];
+      return;
+    }
+
+    if (oldPhase == YTVolumeHUDTransitionPhaseExpanding ||
+        oldPhase == YTVolumeHUDTransitionPhaseIdle) {
+      [self expandFromCurrentWithToken:token inWindow:window];
+      return;
+    }
+  }
+
+  if (oldPhase == YTVolumeHUDTransitionPhaseEntering ||
+      oldPhase == YTVolumeHUDTransitionPhaseLeaving) {
+    [self leaveFromCurrentWithToken:token inWindow:window];
     return;
   }
 
-  self.targetPresented = presented;
-
-  [self.transitionAnimator stopAnimation:YES];
-  self.transitionAnimator = nil;
-
-  CGSize targetSize = presented ? [self expandedSizeForWindow:window]
-                                : [self collapsedSizeForWindow:window];
-  CGFloat hiddenTranslation =
-      -([self topYForWindow:window] +
-        [self collapsedSizeForWindow:window].height + 16.0f);
-
-  __weak typeof(self) weakSelf = self;
-  self.transitionAnimator =
-      [[UIViewPropertyAnimator alloc] initWithDuration:0.36
-                                         dampingRatio:0.88
-                                          animations:^{
-                                            YTVolumeHUD *strongSelf = weakSelf;
-                                            if (!strongSelf)
-                                              return;
-
-                                            [strongSelf setGeometryForSize:targetSize
-                                                                 inWindow:window];
-                                            strongSelf.transform =
-                                                presented
-                                                    ? CGAffineTransformIdentity
-                                                    : CGAffineTransformMakeTranslation(
-                                                          0.0f,
-                                                          hiddenTranslation);
-                                            strongSelf.alpha =
-                                                presented ? 1.0f : 0.0f;
-                                            [strongSelf
-                                                applyExpandedVisualState:presented];
-                                            [strongSelf layoutIfNeeded];
-                                          }];
-
-  [self.transitionAnimator
-      addCompletion:^(UIViewAnimatingPosition finalPosition) {
-        YTVolumeHUD *strongSelf = weakSelf;
-        if (!strongSelf)
-          return;
-
-        (void)finalPosition;
-        [strongSelf finishPresentationState:strongSelf.targetPresented];
-      }];
-
-  [self.transitionAnimator startAnimation];
+  [self shrinkFromCurrentWithToken:token inWindow:window];
 }
 
 - (BOOL)isPresentedOrTransitioning {
-  return self.superview != nil ||
-         (self.transitionAnimator &&
-          self.transitionAnimator.state == UIViewAnimatingStateActive);
+  return self.superview != nil;
 }
 
 - (void)showWithValue:(float)value {
@@ -378,7 +474,7 @@
   [self updateDisplayedValue:value];
 
   BOOL shouldPresent = !self.targetPresented;
-  if (!self.superview && !self.transitionAnimator)
+  if (!self.superview)
     shouldPresent = YES;
 
   [self animateToPresented:shouldPresent];
@@ -389,7 +485,7 @@
     return;
 
   float value = fminf(20.0f, fmaxf(0.0f, slider.value));
-  [self updateDisplayedValue:value];
+  [self updatePercentText:value];
 
   if (self.changeBlock)
     self.changeBlock(value);
@@ -399,8 +495,29 @@
 }
 
 - (void)sliderInteractionEnded:(UISlider *)slider {
-  (void)slider;
-  if (self.interactiveMode && self.autoHideEnabled)
+  if (!self.interactiveMode)
+    return;
+
+  float snapped =
+      fminf(20.0f, fmaxf(0.0f, roundf(slider.value * 4.0f) / 4.0f));
+  [self updatePercentText:snapped];
+
+  if (self.changeBlock)
+    self.changeBlock(snapped);
+
+  [UIView animateWithDuration:0.20
+                        delay:0.0
+       usingSpringWithDamping:0.68
+        initialSpringVelocity:0.45
+                      options:UIViewAnimationOptionBeginFromCurrentState |
+                              UIViewAnimationOptionAllowUserInteraction
+                   animations:^{
+                     [slider setValue:snapped animated:NO];
+                     [slider layoutIfNeeded];
+                   }
+                   completion:nil];
+
+  if (self.autoHideEnabled)
     [self scheduleHideAfterDelay:1.8];
 }
 
@@ -424,7 +541,7 @@
                                            selector:@selector(hide)
                                              object:nil];
 
-  if (!self.superview && !self.transitionAnimator)
+  if (!self.superview)
     return;
 
   [self animateToPresented:NO];
