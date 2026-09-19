@@ -15,7 +15,6 @@
 @property(nonatomic, assign) BOOL interactiveMode;
 @property(nonatomic, assign) BOOL autoHideEnabled;
 @property(nonatomic, assign) BOOL targetPresented;
-@property(nonatomic, assign) BOOL animatorEndPresented;
 @property(nonatomic, copy) YTVolumeHUDChangeBlock changeBlock;
 @end
 
@@ -285,8 +284,6 @@
   }
 
   self.targetPresented = presented;
-  self.animatorEndPresented = presented;
-
   [self.transitionAnimator stopAnimation:YES];
   self.transitionAnimator = nil;
 
@@ -328,11 +325,8 @@
         if (!strongSelf)
           return;
 
-        BOOL endedAtTarget =
-            finalPosition == UIViewAnimatingPositionEnd;
-        BOOL finalPresented = endedAtTarget
-                                  ? strongSelf.animatorEndPresented
-                                  : !strongSelf.animatorEndPresented;
+        (void)finalPosition;
+        BOOL finalPresented = strongSelf.targetPresented;
 
         strongSelf.transitionAnimator = nil;
         [strongSelf finishPresentationState:finalPresented inWindow:window];
