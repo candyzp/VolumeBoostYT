@@ -846,11 +846,13 @@ static void VBConfigureSensitivityCell(YTSettingsCell *cell) {
 
   CGFloat width = CGRectGetWidth(cell.contentView.bounds);
   CGFloat height = CGRectGetHeight(cell.contentView.bounds);
-  CGFloat y = MAX(30.0f, height - 34.0f);
+  CGFloat y = MIN(MAX(39.0f, height * 0.46f),
+                  MAX(39.0f, height - 40.0f));
 
-  lessLabel.frame = CGRectMake(16.0f, y + 3.0f, 34.0f, 20.0f);
-  moreLabel.frame = CGRectMake(width - 50.0f, y + 3.0f, 34.0f, 20.0f);
-  slider.frame = CGRectMake(52.0f, y - 2.0f, MAX(90.0f, width - 104.0f), 31.0f);
+  lessLabel.frame = CGRectMake(16.0f, y + 1.0f, 34.0f, 20.0f);
+  moreLabel.frame = CGRectMake(width - 50.0f, y + 1.0f, 34.0f, 20.0f);
+  slider.frame = CGRectMake(52.0f, y - 5.0f,
+                            MAX(90.0f, width - 104.0f), 30.0f);
 
   [cell.contentView bringSubviewToFront:slider];
   [cell.contentView bringSubviewToFront:lessLabel];
