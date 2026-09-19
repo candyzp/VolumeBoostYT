@@ -7,6 +7,7 @@ Volume boost controls for the YouTube app on iOS.
 - Optional shake gesture that opens a manual boost slider
 - Double Tap & Slide, Shake, Both, and Off gesture modes
 - Adjustable shake sensitivity with cooldown protection
+- Optional haptic feedback when a gesture activates
 - Animated top volume boost indicator
 - Volume range from 100% to 2000%
 - Saves and restores the selected boost level
