@@ -11,12 +11,100 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
   YTVolumeHUDTransitionPhaseLeaving = 4,
 };
 
+@interface VBPrecisionSlider : UISlider
+@property(nonatomic, assign) CGFloat lastTrackingX;
+@property(nonatomic, assign) NSTimeInterval lastTrackingTime;
+@property(nonatomic, assign) CGFloat scrubGain;
+@end
+
+@implementation VBPrecisionSlider
+
+- (BOOL)beginTracking:(UITouch *)touch withEvent:(UIEvent *)event {
+  (void)event;
+
+  CGPoint point = [touch locationInView:self];
+  self.lastTrackingX = point.x;
+  self.lastTrackingTime = touch.timestamp;
+  self.scrubGain = 1.0f;
+
+  CGRect track = [self trackRectForBounds:self.bounds];
+  CGRect thumb = [self thumbRectForBounds:self.bounds
+                                 trackRect:track
+                                     value:self.value];
+  CGRect hitThumb = CGRectInset(thumb, -18.0f, -18.0f);
+
+  if (!CGRectContainsPoint(hitThumb, point)) {
+    CGFloat usableWidth = MAX(1.0f, CGRectGetWidth(track));
+    CGFloat fraction =
+        (point.x - CGRectGetMinX(track)) / usableWidth;
+    fraction = MIN(1.0f, MAX(0.0f, fraction));
+    float value =
+        self.minimumValue +
+        (self.maximumValue - self.minimumValue) * fraction;
+    [self setValue:value animated:NO];
+    [self sendActionsForControlEvents:UIControlEventValueChanged];
+  }
+
+  return YES;
+}
+
+- (BOOL)continueTracking:(UITouch *)touch withEvent:(UIEvent *)event {
+  (void)event;
+
+  CGPoint point = [touch locationInView:self];
+  NSTimeInterval now = touch.timestamp;
+  NSTimeInterval dt = MAX(0.001, now - self.lastTrackingTime);
+  CGFloat dx = point.x - self.lastTrackingX;
+  CGFloat speed = fabs(dx) / dt;
+
+  CGFloat targetGain = 0.18f;
+  if (speed >= 500.0f)
+    targetGain = 1.0f;
+  else if (speed >= 250.0f)
+    targetGain = 0.76f;
+  else if (speed >= 120.0f)
+    targetGain = 0.52f;
+  else if (speed >= 50.0f)
+    targetGain = 0.32f;
+
+  self.scrubGain =
+      self.scrubGain * 0.72f + targetGain * 0.28f;
+
+  CGRect track = [self trackRectForBounds:self.bounds];
+  CGFloat usableWidth = MAX(1.0f, CGRectGetWidth(track));
+  float range = self.maximumValue - self.minimumValue;
+  float delta =
+      (float)(dx / usableWidth) * range * (float)self.scrubGain;
+  float value =
+      MIN(self.maximumValue, MAX(self.minimumValue, self.value + delta));
+
+  [self setValue:value animated:NO];
+  [self sendActionsForControlEvents:UIControlEventValueChanged];
+
+  self.lastTrackingX = point.x;
+  self.lastTrackingTime = now;
+  return YES;
+}
+
+- (void)endTracking:(UITouch *)touch withEvent:(UIEvent *)event {
+  (void)touch;
+  (void)event;
+  self.scrubGain = 1.0f;
+}
+
+- (void)cancelTrackingWithEvent:(UIEvent *)event {
+  (void)event;
+  self.scrubGain = 1.0f;
+}
+
+@end
+
 @interface YTVolumeHUD ()
 @property(nonatomic, strong) UIVisualEffectView *backgroundView;
 @property(nonatomic, strong) UIImageView *iconView;
 @property(nonatomic, strong) UILabel *titleLabel;
 @property(nonatomic, strong) UILabel *percentLabel;
-@property(nonatomic, strong) UISlider *slider;
+@property(nonatomic, strong) VBPrecisionSlider *slider;
 @property(nonatomic, strong) UIButton *closeButton;
 @property(nonatomic, assign) NSInteger lastDisplayedPercent;
 @property(nonatomic, assign) NSInteger animationToken;
@@ -83,16 +171,13 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
   self.percentLabel.textAlignment = NSTextAlignmentCenter;
   [self addSubview:self.percentLabel];
 
-  self.slider = [[UISlider alloc] initWithFrame:CGRectZero];
+  self.slider = [[VBPrecisionSlider alloc] initWithFrame:CGRectZero];
   self.slider.minimumValue = 0.0f;
   self.slider.maximumValue = 20.0f;
   self.slider.minimumTrackTintColor = [UIColor systemBlueColor];
   self.slider.maximumTrackTintColor =
       [UIColor colorWithWhite:1.0f alpha:0.18f];
   self.slider.continuous = YES;
-  [self.slider addTarget:self
-                  action:@selector(sliderInteractionBegan:)
-        forControlEvents:UIControlEventTouchDown];
   [self.slider addTarget:self
                   action:@selector(sliderValueChanged:)
         forControlEvents:UIControlEventValueChanged];
@@ -483,21 +568,6 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
   [self animateToPresented:shouldPresent];
 }
 
-- (void)sliderInteractionBegan:(UISlider *)slider {
-  if (!self.interactiveMode)
-    return;
-
-  [UIView animateWithDuration:0.10
-                        delay:0.0
-                      options:UIViewAnimationOptionBeginFromCurrentState |
-                              UIViewAnimationOptionAllowUserInteraction
-                   animations:^{
-                     slider.transform =
-                         CGAffineTransformMakeScale(1.0f, 0.94f);
-                   }
-                   completion:nil];
-}
-
 - (void)sliderValueChanged:(UISlider *)slider {
   if (!self.interactiveMode)
     return;
@@ -521,17 +591,6 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
 
   if (self.changeBlock)
     self.changeBlock(value);
-
-  [UIView animateWithDuration:0.24
-                        delay:0.0
-       usingSpringWithDamping:0.70
-        initialSpringVelocity:0.55
-                      options:UIViewAnimationOptionBeginFromCurrentState |
-                              UIViewAnimationOptionAllowUserInteraction
-                   animations:^{
-                     slider.transform = CGAffineTransformIdentity;
-                   }
-                   completion:nil];
 
   if (self.autoHideEnabled)
     [self scheduleHideAfterDelay:1.8];
