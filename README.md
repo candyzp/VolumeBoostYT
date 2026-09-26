@@ -5,6 +5,7 @@ Volume boost controls for the YouTube app on iOS.
 ## Features
 - Middle-right inward swipe drops a compact notch from the top; continue the same swipe up or down to adjust boost
 - The notch updates as you drag, hides shortly after release, and can be dismissed with a rightward swipe
+- Taps in the right-side area pass through to YouTube controls, including comments
 - Shake mode toggles the larger panel and its manual boost slider open and closed
 - Right Side and Shake gesture modes
 - Adjustable shake sensitivity with cooldown protection
