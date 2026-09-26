@@ -110,6 +110,7 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
 @property(nonatomic, assign) NSInteger animationToken;
 @property(nonatomic, assign) YTVolumeHUDTransitionPhase transitionPhase;
 @property(nonatomic, assign) BOOL interactiveMode;
+@property(nonatomic, assign) BOOL notchMode;
 @property(nonatomic, assign) BOOL autoHideEnabled;
 @property(nonatomic, assign) BOOL targetPresented;
 @property(nonatomic, copy) YTVolumeHUDChangeBlock changeBlock;
@@ -402,7 +403,12 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
                          !self.targetPresented)
                        return;
 
-                     [self expandFromCurrentWithToken:token inWindow:window];
+                     if (self.notchMode) {
+                       self.transitionPhase = YTVolumeHUDTransitionPhaseIdle;
+                       self.userInteractionEnabled = NO;
+                     } else {
+                       [self expandFromCurrentWithToken:token inWindow:window];
+                     }
                    }];
 }
 
@@ -442,6 +448,7 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
                      self.userInteractionEnabled = NO;
                      self.changeBlock = nil;
                      self.interactiveMode = NO;
+                     self.notchMode = NO;
                      self.autoHideEnabled = NO;
                    }];
 }
@@ -494,6 +501,11 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
   self.targetPresented = presented;
 
   if (presented) {
+    if (self.notchMode) {
+      [self enterFromCurrentWithToken:token inWindow:window];
+      return;
+    }
+
     if (!wasAttached || oldPhase == YTVolumeHUDTransitionPhaseEntering ||
         oldPhase == YTVolumeHUDTransitionPhaseLeaving) {
       [self enterFromCurrentWithToken:token inWindow:window];
@@ -512,7 +524,7 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
     }
   }
 
-  if (oldPhase == YTVolumeHUDTransitionPhaseEntering ||
+  if (self.notchMode || oldPhase == YTVolumeHUDTransitionPhaseEntering ||
       oldPhase == YTVolumeHUDTransitionPhaseLeaving) {
     [self leaveFromCurrentWithToken:token inWindow:window];
     return;
@@ -525,16 +537,41 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
   return self.superview != nil;
 }
 
+- (BOOL)isTargetPresented {
+  return self.targetPresented && self.superview != nil;
+}
+
+- (BOOL)isNotchPresented {
+  return self.notchMode && [self isTargetPresented];
+}
+
 - (void)showWithValue:(float)value {
   [NSObject cancelPreviousPerformRequestsWithTarget:self
                                            selector:@selector(hide)
                                              object:nil];
   self.interactiveMode = NO;
+  self.notchMode = NO;
   self.autoHideEnabled = NO;
   self.changeBlock = nil;
   self.userInteractionEnabled = NO;
   [self updateDisplayedValue:value];
   [self animateToPresented:YES];
+}
+
+- (void)showNotchWithValue:(float)value
+              changeBlock:(YTVolumeHUDChangeBlock)changeBlock {
+  [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                           selector:@selector(hide)
+                                             object:nil];
+  BOOL alreadyVisible = [self isNotchPresented];
+  self.notchMode = YES;
+  self.interactiveMode = YES;
+  self.autoHideEnabled = NO;
+  self.changeBlock = changeBlock;
+  self.userInteractionEnabled = NO;
+  [self updateDisplayedValue:value];
+  if (!alreadyVisible)
+    [self animateToPresented:YES];
 }
 
 - (void)showInteractiveWithValue:(float)value
@@ -543,6 +580,7 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
                                            selector:@selector(hide)
                                              object:nil];
   self.interactiveMode = YES;
+  self.notchMode = NO;
   self.autoHideEnabled = NO;
   self.changeBlock = changeBlock;
   self.userInteractionEnabled = YES;
@@ -556,6 +594,7 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
                                            selector:@selector(hide)
                                              object:nil];
   self.interactiveMode = YES;
+  self.notchMode = NO;
   self.autoHideEnabled = NO;
   self.changeBlock = changeBlock;
   self.userInteractionEnabled = YES;
@@ -566,6 +605,18 @@ typedef NS_ENUM(NSInteger, YTVolumeHUDTransitionPhase) {
     shouldPresent = YES;
 
   [self animateToPresented:shouldPresent];
+}
+
+- (void)setInteractiveValue:(float)value {
+  if (!self.interactiveMode || ![self isTargetPresented])
+    return;
+
+  value = fminf(20.0f, fmaxf(0.0f, value));
+  if (fabsf(self.slider.value - value) < 0.002f)
+    return;
+
+  [self.slider setValue:value animated:NO];
+  [self sliderValueChanged:self.slider];
 }
 
 - (void)sliderValueChanged:(UISlider *)slider {

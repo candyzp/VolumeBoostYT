@@ -105,6 +105,26 @@ static inline id TrackRenderer(id renderer) {
   return renderer;
 }
 
+void VBStartPlaybackPersistenceMonitoring(void) {
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    NSArray<NSString *> *events = @[
+      AVPlayerItemDidPlayToEndTimeNotification,
+      AVPlayerItemTimeJumpedNotification
+    ];
+    for (NSString *event in events) {
+      [center addObserverForName:event
+                         object:nil
+                          queue:[NSOperationQueue mainQueue]
+                     usingBlock:^(NSNotification *notification) {
+                       (void)notification;
+                       RequestRepair(nil);
+                     }];
+    }
+  });
+}
+
 %hook AVPlayer
 
 - (instancetype)init {

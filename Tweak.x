@@ -5,6 +5,8 @@
 #import <math.h>
 #import <objc/runtime.h>
 
+extern void VBStartPlaybackPersistenceMonitoring(void);
+
 @interface YTSettingsCell : UITableViewCell
 @end
 
@@ -82,7 +84,6 @@ static BOOL preferencesLoaded = NO;
 static NSHashTable *activeRenderers = nil;
 static dispatch_once_t activeRenderersOnce;
 static char kRendererRegisteredKey;
-static char kVolumeGestureRecognizerKey;
 static char kVolumeGestureHandlerKey;
 static char kGestureMenuButtonKey;
 static char kSensitivitySliderKey;
@@ -319,14 +320,11 @@ static void VBShowShakeControl(void) {
       return;
 
     YTVolumeHUD *hud = [YTVolumeHUD sharedHUD];
-    if ([hud isPresentedOrTransitioning])
-      return;
-
-    [hud showInteractiveWithValue:GetCustomVolumeMultiplier()
-                      changeBlock:^(float value) {
-                        if (SetCustomVolumeMultiplier(value))
-                          PersistCurrentVolumeIfNeeded();
-                      }];
+    [hud toggleInteractiveWithValue:GetCustomVolumeMultiplier()
+                        changeBlock:^(float value) {
+                          if (SetCustomVolumeMultiplier(value))
+                            PersistCurrentVolumeIfNeeded();
+                        }];
   });
 }
 
@@ -414,17 +412,15 @@ static CGRect VBRightSideActivationRect(UIWindow *window) {
 
   CGFloat width = CGRectGetWidth(window.bounds);
   CGFloat height = CGRectGetHeight(window.bounds);
-  CGFloat bandHeight = MIN(320.0f, MAX(220.0f, height * 0.34f));
+  CGFloat top = window.safeAreaInsets.top + 8.0f;
+  CGFloat bottom = height - window.safeAreaInsets.bottom - 8.0f;
+  CGFloat availableHeight = MAX(0.0f, bottom - top);
+  CGFloat bandHeight = MIN(width > height ? 160.0f : 220.0f,
+                           availableHeight);
+  CGFloat y = top + (availableHeight - bandHeight) * 0.5f;
+  CGFloat bandWidth = MIN(88.0f, width * 0.24f);
 
-  if (width > height)
-    bandHeight = MIN(220.0f, MAX(150.0f, height * 0.50f));
-
-  CGFloat centerY = height * 0.52f;
-  CGFloat y = centerY - bandHeight * 0.5f;
-  y = MAX(window.safeAreaInsets.top + 8.0f, y);
-  y = MIN(y, height - window.safeAreaInsets.bottom - bandHeight - 8.0f);
-
-  return CGRectMake(MAX(0.0f, width - 34.0f), y, 34.0f, bandHeight);
+  return CGRectMake(width - bandWidth, y, bandWidth, bandHeight);
 }
 
 static void VBHideRightSideHint(UIWindow *window) {
@@ -540,112 +536,124 @@ static void VBShowRightSideHintIfNeeded(UIWindow *window) {
                  });
 }
 
-@interface VBVolumeGestureHandler : NSObject <UIGestureRecognizerDelegate>
-@property(nonatomic, weak) UIWindow *window;
+static void VBShowCompactVolumeControl(float value) {
+  [[YTVolumeHUD sharedHUD] showNotchWithValue:value
+                                 changeBlock:^(float updatedValue) {
+                                   if (SetCustomVolumeMultiplier(updatedValue))
+                                     PersistCurrentVolumeIfNeeded();
+                                 }];
+}
+
+@interface VBVolumeTouchHandler : NSObject
+@property(nonatomic, strong) UITouch *trackedTouch;
+@property(nonatomic, assign) CGPoint startPoint;
+@property(nonatomic, assign) float startMultiplier;
+@property(nonatomic, assign) BOOL evaluating;
+@property(nonatomic, assign) BOOL adjusting;
+- (BOOL)handleEvent:(UIEvent *)event inWindow:(UIWindow *)window;
 @end
 
-@implementation VBVolumeGestureHandler
+@implementation VBVolumeTouchHandler
 
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-       shouldReceiveTouch:(UITouch *)touch {
-  (void)gestureRecognizer;
+- (void)reset {
+  self.trackedTouch = nil;
+  self.evaluating = NO;
+  self.adjusting = NO;
+}
 
-  UIWindow *window = self.window;
-  if (!window || !IsVolumeBoostYTEnabled() ||
-      !VBGestureMethodAllowsRightSide()) {
+- (BOOL)handleEvent:(UIEvent *)event inWindow:(UIWindow *)window {
+  if (!IsVolumeBoostYTEnabled() || !VBGestureMethodAllowsRightSide() ||
+      window.screen != [UIScreen mainScreen] ||
+      window.windowLevel != UIWindowLevelNormal || !window.isKeyWindow) {
+    [self reset];
     return NO;
   }
 
-  if (window.screen != [UIScreen mainScreen] ||
-      window.windowLevel != UIWindowLevelNormal) {
-    return NO;
-  }
-
-  CGPoint location = [touch locationInView:window];
-  if (!CGRectContainsPoint(VBRightSideActivationRect(window), location))
-    return NO;
-
-  UIView *view = touch.view;
-  for (UIView *candidate = view; candidate && candidate != window;
-       candidate = candidate.superview) {
-    if ([candidate isKindOfClass:[UITextField class]] ||
-        [candidate isKindOfClass:[UITextView class]]) {
+  NSSet<UITouch *> *touches = event.allTouches;
+  UITouch *touch = self.trackedTouch;
+  if (!touch) {
+    if (touches.count != 1)
       return NO;
+
+    touch = touches.anyObject;
+    if (touch.phase != UITouchPhaseBegan ||
+        !CGRectContainsPoint(VBRightSideActivationRect(window),
+                             [touch locationInView:window]))
+      return NO;
+
+    for (UIView *candidate = touch.view; candidate && candidate != window;
+         candidate = candidate.superview) {
+      if ([candidate isKindOfClass:[UIControl class]] ||
+          [candidate isKindOfClass:[UITextField class]] ||
+          [candidate isKindOfClass:[UITextView class]])
+        return NO;
     }
+
+    self.trackedTouch = touch;
+    self.startPoint = [touch locationInView:window];
+    self.evaluating = YES;
+    self.adjusting = NO;
+    if ([[YTVolumeHUD sharedHUD] isNotchPresented])
+      VBShowCompactVolumeControl(GetCustomVolumeMultiplier());
+    return YES;
   }
 
+  if (![touches containsObject:touch])
+    return NO;
+
+  if (touch.phase == UITouchPhaseMoved) {
+    CGPoint location = [touch locationInView:window];
+    YTVolumeHUD *hud = [YTVolumeHUD sharedHUD];
+
+    if (self.evaluating) {
+      CGFloat dx = self.startPoint.x - location.x;
+      CGFloat dy = location.y - self.startPoint.y;
+      BOOL inward = dx > 15.0f && dx > fabs(dy);
+      BOOL outward = [hud isNotchPresented] && dx < -12.0f &&
+                     -dx > fabs(dy);
+      BOOL verticalOnNotch =
+          [hud isNotchPresented] && fabs(dy) > 14.0f &&
+          fabs(dy) > fabs(dx) * 1.15f;
+
+      if (inward || outward || verticalOnNotch) {
+        self.evaluating = NO;
+        self.adjusting = !outward;
+        self.startPoint = location;
+        self.startMultiplier = GetCustomVolumeMultiplier();
+        VBHideRightSideHint(window);
+        VBPerformHapticFeedback();
+
+        if (outward) {
+          [hud hide];
+        } else {
+          VBShowCompactVolumeControl(self.startMultiplier);
+        }
+      } else if (fabs(dy) > 20.0f || dx < -12.0f) {
+        self.evaluating = NO;
+      }
+      return YES;
+    }
+
+    if (self.adjusting) {
+      // Keep the original drag sensitivity: 30 points per 1x boost.
+      float value = self.startMultiplier -
+                    (float)((location.y - self.startPoint.y) / 30.0f);
+      [hud setInteractiveValue:value];
+    }
+    return YES;
+  }
+
+  if (touch.phase == UITouchPhaseEnded ||
+      touch.phase == UITouchPhaseCancelled) {
+    YTVolumeHUD *hud = [YTVolumeHUD sharedHUD];
+    if ([hud isNotchPresented])
+      [hud scheduleHideAfterDelay:1.0];
+    [self reset];
+  }
   return YES;
 }
 
-- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
-  if (![gestureRecognizer isKindOfClass:[UIPanGestureRecognizer class]])
-    return YES;
-
-  UIPanGestureRecognizer *pan =
-      (UIPanGestureRecognizer *)gestureRecognizer;
-  CGPoint velocity = [pan velocityInView:self.window];
-
-  if (velocity.x >= -35.0f)
-    return NO;
-
-  return fabs(velocity.x) > fabs(velocity.y) * 1.10f;
-}
-
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-    shouldRecognizeSimultaneouslyWithGestureRecognizer:
-        (UIGestureRecognizer *)otherGestureRecognizer {
-  (void)gestureRecognizer;
-  (void)otherGestureRecognizer;
-  return NO;
-}
-
-- (void)handleRightSidePan:(UIPanGestureRecognizer *)pan {
-  if (pan.state != UIGestureRecognizerStateBegan)
-    return;
-
-  UIWindow *window = self.window;
-  if (!window)
-    return;
-
-  VBHideRightSideHint(window);
-  VBPerformHapticFeedback();
-
-  [[YTVolumeHUD sharedHUD]
-      toggleInteractiveWithValue:GetCustomVolumeMultiplier()
-                     changeBlock:^(float value) {
-                       if (SetCustomVolumeMultiplier(value))
-                         PersistCurrentVolumeIfNeeded();
-                     }];
-}
-
 @end
-
-static void VBEnsureVolumeGestureRecognizer(UIWindow *window) {
-  if (!window || window.screen != [UIScreen mainScreen])
-    return;
-
-  if (objc_getAssociatedObject(window, &kVolumeGestureRecognizerKey))
-    return;
-
-  VBVolumeGestureHandler *handler = [[VBVolumeGestureHandler alloc] init];
-  handler.window = window;
-
-  UIPanGestureRecognizer *pan =
-      [[UIPanGestureRecognizer alloc] initWithTarget:handler
-                                             action:@selector(handleRightSidePan:)];
-  pan.delegate = handler;
-  pan.cancelsTouchesInView = YES;
-  pan.delaysTouchesBegan = NO;
-  pan.delaysTouchesEnded = NO;
-  pan.minimumNumberOfTouches = 1;
-  pan.maximumNumberOfTouches = 1;
-
-  objc_setAssociatedObject(window, &kVolumeGestureHandlerKey, handler,
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  objc_setAssociatedObject(window, &kVolumeGestureRecognizerKey, pan,
-                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  [window addGestureRecognizer:pan];
-}
 
 static void VBScheduleRightSideHint(UIWindow *window) {
   if (!window)
@@ -662,21 +670,30 @@ static void VBScheduleRightSideHint(UIWindow *window) {
 
 - (void)sendEvent:(UIEvent *)event {
   if (self.screen == [UIScreen mainScreen]) {
-    VBEnsureVolumeGestureRecognizer(self);
     VBShowRightSideHintIfNeeded(self);
+
+    VBVolumeTouchHandler *handler =
+        objc_getAssociatedObject(self, &kVolumeGestureHandlerKey);
+    if (!handler && self.windowLevel == UIWindowLevelNormal &&
+        self.isKeyWindow && IsVolumeBoostYTEnabled() &&
+        VBGestureMethodAllowsRightSide()) {
+      handler = [[VBVolumeTouchHandler alloc] init];
+      objc_setAssociatedObject(self, &kVolumeGestureHandlerKey, handler,
+                               OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if ([handler handleEvent:event inWindow:self])
+      return;
   }
   %orig(event);
 }
 
 - (void)makeKeyAndVisible {
   %orig;
-  VBEnsureVolumeGestureRecognizer(self);
   VBScheduleRightSideHint(self);
 }
 
 - (void)becomeKeyWindow {
   %orig;
-  VBEnsureVolumeGestureRecognizer(self);
   VBScheduleRightSideHint(self);
 }
 
@@ -1180,4 +1197,5 @@ accessibilityIdentifier:nil
 
   VBConfigureShakeDetector();
   %init;
+  VBStartPlaybackPersistenceMonitoring();
 }

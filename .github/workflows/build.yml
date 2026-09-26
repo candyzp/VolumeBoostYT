@@ -2,6 +2,7 @@ name: Build Tweak
 
 on:
   workflow_dispatch:
+  pull_request:
 
 jobs:
   build:
@@ -43,6 +44,13 @@ jobs:
           elif [ -f .theos/obj/debug/VolumeBoostYT.dylib ]; then
             cp .theos/obj/debug/VolumeBoostYT.dylib output/
           fi
+
+      - name: Upload test build
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: VolumeBoostYT-test-build
+          path: output/*
 
       - name: Generate Release Tag
         id: tag
